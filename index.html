@@ -577,6 +577,8 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
 .boleto-papel .sub { margin-bottom: 14px; }
 .boleto-papel .secao-titulo { margin-top: 18px; }
 
+.dev .cpf { font-size: 14px; letter-spacing: .04em; white-space: nowrap; }
+
 </style>
 </head>
 <body>
@@ -688,6 +690,7 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
       mostrarReajusteProgramado: DADOS.config.mostrarReajusteProgramado,
       modoDev: true,
       demo: true,
+      cpfExemplo: (DADOS.adesoes.find((x) => x.adesaoId === 'ades-7506-teste') || DADOS.adesoes[0]).cpf,
       avisoDados: DADOS.aviso,
       hojeSimulado: HOJE,
     }),
@@ -708,7 +711,8 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
 
       const neutra = { enviado: true, canais: ['whatsapp', 'email'], destinos: {}, expiraEmSegundos: OTP.expiraMs / 1000 };
       const encontradas = adesoesPorCpf(doc);
-      if (!encontradas.length) return neutra;   // resposta neutra: não revela se o CPF existe
+      // Em produção a resposta é neutra; aqui, como nada é enviado, avisamos.
+      if (!encontradas.length) return { ...neutra, cadastrado: false };
 
       const codigo = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
       codigos.set(doc, { codigo, expiraEm: Date.now() + OTP.expiraMs, tentativas: 0, criadoEm: Date.now() });
@@ -1021,6 +1025,11 @@ function telaEntrar(erro) {
           ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
           <button class="botao" type="submit">Receber código</button>
         </form>
+        ${estado.config?.cpfExemplo ? `
+          <div class="dev">
+            Ambiente de teste: nenhum código é enviado por e-mail ou WhatsApp — ele aparece
+            aqui na tela. Entre com <strong class="cpf">${escapar(mascaraCpf(estado.config.cpfExemplo))}</strong>
+          </div>` : ''}
       </div>
       ${notaRodape()}
     </div>`;
@@ -1036,6 +1045,12 @@ function telaEntrar(erro) {
     botao.disabled = true; botao.textContent = 'Enviando…';
     try {
       const r = await chamar('/auth/otp/solicitar', { method: 'POST', body: JSON.stringify({ cpf }) });
+      // Em produção a resposta é sempre a mesma, exista o CPF ou não. No protótipo,
+      // onde nada é enviado, ficar na tela do código sem código só confunde.
+      if (r.cadastrado === false) {
+        const sugerido = estado.config?.cpfExemplo ? ` Use ${mascaraCpf(estado.config.cpfExemplo)}.` : '';
+        return telaEntrar(`Esse CPF não está nos dados de exemplo.${sugerido}`);
+      }
       telaCodigo(r);
     } catch (err) {
       const mensagens = {
