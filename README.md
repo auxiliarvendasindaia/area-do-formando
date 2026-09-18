@@ -4,7 +4,7 @@ Protótipo navegável da Área do Formando de Grandes Formaturas (Indaiá Evento
 
 **Site:** https://auxiliarvendasindaia.github.io/area-do-formando/
 
-Para entrar, use o CPF `123.456.789-09`. O código de acesso de 6 dígitos aparece
+Para entrar, use o CPF `111.111.111-11`. O código de acesso de 6 dígitos aparece
 na própria tela — não há envio por e-mail nem WhatsApp.
 
 ## O que é
