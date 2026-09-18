@@ -610,15 +610,29 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
    as margens dos lados ficam claras. Por cima de tudo, uma película tira o
    brilho da tela.
    ========================================================================== */
-.faixa-central { max-width: var(--coluna); margin: 0 auto; min-height: 100vh; }
+.faixa-central {
+  /* A coluna do conteúdo é sempre a faixa roxa da marca — nos dois temas. Ela
+     carrega o próprio jogo de cores, para o que está dentro continuar legível
+     mesmo quando a página ao redor está clara. */
+  --fundo: #2A1B42;
+  --superficie: #35244F;
+  --superficie-2: #3E2B5B;
+  --texto: #F3EDF8;
+  --texto-suave: #BCAFCE;
+  --linha: rgba(242, 233, 216, .18);
+  --accent-txt: var(--violet-soft);
+  --positivo: #6FCFA8;
+  --negativo: #E89B95;
+  --dourado-txt: var(--gold-soft);
+
+  max-width: var(--coluna); margin: 0 auto; min-height: 100vh;
+  background: var(--fundo); color: var(--texto);
+  box-shadow: 0 0 60px rgba(12, 7, 21, .3);
+}
 main { max-width: none; margin: 0; }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-tema="claro"]) .conteudo { background: #F6F3EE; }
-  :root:not([data-tema="claro"]) .faixa-central { background: var(--fundo); box-shadow: 0 0 60px rgba(12, 7, 21, .35); }
-}
-:root[data-tema="escuro"] .conteudo { background: #F6F3EE; }
-:root[data-tema="escuro"] .faixa-central { background: var(--fundo); box-shadow: 0 0 60px rgba(12, 7, 21, .35); }
+/* as faixas dos lados ficam claras sempre; o tema só muda a película */
+.conteudo { background: #F6F3EE; }
 
 /* película: escurece a tela inteira de leve, sem mexer nas cores */
 .pelicula {
