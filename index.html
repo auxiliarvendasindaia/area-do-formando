@@ -734,31 +734,28 @@ main { max-width: none; margin: 0; }
 .ajuda:hover, .ajuda:focus-visible { background: var(--violet); border-color: var(--violet); color: #fff; }
 .ajuda:focus-visible { outline: 2px solid var(--violet-soft); outline-offset: 2px; }
 
+/* O balão fica preso à janela, não ao texto: dentro da folha e das listas, que
+   rolam, um balão absoluto era cortado pela borda da caixa. Quem calcula onde
+   ele cabe — acima ou abaixo, e sem passar das laterais — é o app.js. */
 .balao {
-  position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%) translateY(4px);
-  width: max-content; max-width: min(320px, 78vw); z-index: 200;
+  position: fixed; top: 0; left: 0; z-index: 200;
+  width: max-content; max-width: min(320px, calc(100vw - 24px));
   padding: 12px 14px; border-radius: var(--raio);
   background: var(--night); color: var(--cream);
   font-family: var(--sans); font-size: 13px; line-height: 1.55; white-space: normal; text-align: left;
   box-shadow: 0 10px 30px rgba(12, 7, 21, .45);
-  opacity: 0; visibility: hidden; transition: opacity .15s, transform .15s, visibility .15s;
+  opacity: 0; visibility: hidden; transform: translateY(4px);
+  transition: opacity .15s, transform .15s, visibility .15s;
 }
+.balao.aberto { opacity: 1; visibility: visible; transform: none; }
 .balao b { display: block; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--gold-soft); margin-bottom: 5px; }
 .balao::after {
-  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  content: ""; position: absolute; top: 100%; left: var(--seta-x, 50%); transform: translateX(-50%);
   border: 6px solid transparent; border-top-color: var(--night);
 }
-.cita:hover .balao, .ajuda:focus-visible + .balao, .cita:focus-within .balao {
-  opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
-}
+/* quando não cabe acima da citação, o balão abre embaixo e a seta vira */
+.balao.abaixo::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: var(--night); }
 @media (prefers-reduced-motion: reduce) { .balao { transition: none; } }
-
-/* perto da borda direita o balão se ajusta para não sair da tela */
-@media (max-width: 560px) {
-  .balao { left: auto; right: -8px; transform: translateY(4px); max-width: 76vw; }
-  .balao::after { left: auto; right: 24px; transform: none; }
-  .cita:hover .balao, .cita:focus-within .balao { transform: translateY(0); }
-}
 
 /* ==========================================================================
    Revisão de leitura — tema claro com cartões em papel
@@ -1849,7 +1846,7 @@ function abrirFolha(html, depois) {
 }
 const fecharFolha = () => { folha.hidden = true; };
 folha.addEventListener('click', (e) => { if (e.target.hasAttribute('data-fechar-folha')) fecharFolha(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fecharFolha(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { fecharBaloes(); fecharFolha(); } });
 
 async function copiar(texto) {
   try {
@@ -2143,6 +2140,56 @@ function clausula(numero, prefixo = 'cláusula ') {
   if (!texto) return `<small>(cláusula ${escapar(numero)})</small>`;
   return `<span class="cita">(${escapar(prefixo)}${escapar(numero)})<button class="ajuda" type="button" aria-label="Ver a cláusula ${escapar(numero)}">?</button><span class="balao" role="tooltip"><b>Cláusula ${escapar(numero)}</b>${escapar(texto)}</span></span>`;
 }
+
+// O balão da cláusula é posicionado na janela (position: fixed), porque quase
+// sempre ele nasce dentro de algo que rola — a folha, uma lista — e ali seria
+// cortado pela borda da caixa. Aqui a conta é: centralizado na citação, acima
+// dela se couber, senão abaixo, sempre dentro da tela. A seta acompanha.
+function abrirBalao(cita) {
+  const balao = cita.querySelector('.balao');
+  if (!balao) return;
+  fecharBaloes();
+  balao.classList.remove('abaixo');
+  balao.classList.add('aberto');
+
+  const margem = 12;
+  const c = cita.getBoundingClientRect();
+  const b = balao.getBoundingClientRect();
+  const meio = c.left + c.width / 2;
+
+  const esquerda = Math.max(margem, Math.min(meio - b.width / 2, innerWidth - b.width - margem));
+  let topo = c.top - b.height - 10;
+  if (topo < margem) { topo = c.bottom + 10; balao.classList.add('abaixo'); }
+
+  balao.style.left = `${Math.round(esquerda)}px`;
+  balao.style.top = `${Math.round(topo)}px`;
+  balao.style.setProperty('--seta-x', `${Math.round(Math.max(14, Math.min(meio - esquerda, b.width - 14)))}px`);
+}
+
+const fecharBaloes = () => document.querySelectorAll('.balao.aberto').forEach((b) => b.classList.remove('aberto'));
+const citaDe = (alvo) => (alvo instanceof Element ? alvo.closest('.cita') : null);
+
+document.addEventListener('mouseover', (e) => { const c = citaDe(e.target); if (c) abrirBalao(c); });
+document.addEventListener('mouseout', (e) => {
+  const c = citaDe(e.target);
+  if (c && !c.contains(e.relatedTarget)) fecharBaloes();
+});
+document.addEventListener('focusin', (e) => { const c = citaDe(e.target); if (c) abrirBalao(c); else fecharBaloes(); });
+// No celular não há hover: quem abre é o toque no "?". O toque sempre abre (e
+// nunca alterna), porque o navegador emula um mouseover antes do clique — se
+// alternasse, o balão abriria no emulado e fecharia no clique. Para fechar,
+// toca-se fora, rola a tela ou aperta Esc.
+document.addEventListener('click', (e) => {
+  const ajuda = e.target instanceof Element ? e.target.closest('.ajuda') : null;
+  if (ajuda) {
+    e.preventDefault();
+    return abrirBalao(ajuda.closest('.cita'));
+  }
+  if (!citaDe(e.target)) fecharBaloes();
+});
+// rolou ou redimensionou, a âncora saiu do lugar: some
+document.addEventListener('scroll', fecharBaloes, true);
+addEventListener('resize', fecharBaloes);
 
 // Rabisco de caneta em volta da palavra, como no hero do site de formaturas.
 // Vai atrás do texto, esticado pelo tamanho do span.
