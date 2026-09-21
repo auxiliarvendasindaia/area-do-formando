@@ -2226,7 +2226,9 @@ function moldura(conteudo, sub) {
 
 function notaRodape() {
   if (!estado.config?.modoDev) return '';
-  return `<p class="rodape-nota">Ambiente de teste local. ${escapar(estado.config.avisoDados || '')} Data simulada: ${dataCurta(estado.config.hojeSimulado)}.</p>`;
+  // Na página publicada não existe "ambiente local": é uma demonstração aberta.
+  const onde = estado.config.demo ? 'Versão de demonstração.' : 'Ambiente de teste local.';
+  return `<p class="rodape-nota">${onde} ${escapar(estado.config.avisoDados || '')} Data simulada: ${dataCurta(estado.config.hojeSimulado)}.</p>`;
 }
 
 // ---------- pedaços reaproveitados ------------------------------------------
