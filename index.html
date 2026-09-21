@@ -788,6 +788,8 @@ main { max-width: none; margin: 0; }
       id: b.id, parcela: b.parcela, descricao: b.descricao, vencimento: b.vencimento,
       valor: b.valor, status, pagoEm: b.pagoEm, valorPago: b.valorPago,
       podeEmitir: status === 'agendado' && DADOS.config.permitirEmitirBoletoAgendado,
+      valorPleno: valorPleno(b.valor),
+      descontoPontualidade: CONTRATO.descontoPontualidade,
       valorAtualizado: b.valorAtualizado || null,
       encargos: b.encargos || null,
       temLinhaDigitavel: emitido,
@@ -817,14 +819,21 @@ main { max-width: none; margin: 0; }
     };
   }
 
-  // --- encargos, protocolo e extrato (espelham o servidor.mjs) ---------------
-  const MULTA_ATRASO = 0.02;
-  const JUROS_MES = 0.01;
+  // --- regras do termo de adesão (iguais às do servidor.mjs) ------------------
+  // Vêm do contrato (adesao-contrato.template.ts), com a cláusula citada.
+  const CONTRATO = {
+    descontoPontualidade: 0.20,            // 4.1
+    jurosMoraMes: 0.01,                    // 4.3
+    diasNotificacaoAntesNegativar: 15,     // 8.2
+    honorariosCobranca: 0.10,              // 8.3
+    diasInadimplenciaRescisao: 90,         // 17.1
+    taxaReprogramacao: 75,                 // 17.3
+  };
   const PRAZO_RESPOSTA_DIAS = 2;
   const TIPOS_SOLICITACAO = {
     convites_extras: 'Convites extras',
     antecipacao: 'Antecipação de parcelas',
-    renegociacao: 'Renegociação de atraso',
+    renegociacao: 'Reprogramação de pagamento',
     contestacao: 'Contestação de cobrança',
     dados_contato: 'Correção de contato',
     comprovante: 'Comprovante de pagamento',
@@ -832,6 +841,9 @@ main { max-width: none; margin: 0; }
     quitacao: 'Declaração de quitação',
     outro: 'Pedido para a equipe',
   };
+
+  const arredonda = (n) => Math.round(n * 100) / 100;
+  const valorPleno = (v) => arredonda(v / (1 - CONTRATO.descontoPontualidade));
 
   let sequencialProtocolo = 0;
   function novaSolicitacao(adesao, tipo, payload) {
@@ -855,21 +867,23 @@ main { max-width: none; margin: 0; }
   function calcularEncargos(boleto, ate) {
     const venceu = new Date(`${boleto.vencimentoOriginal || boleto.vencimento}T12:00:00`);
     const dias = Math.max(0, Math.round((ate - venceu) / 86400000));
-    const arredonda = (n) => Math.round(n * 100) / 100;
-    const multa = arredonda(boleto.valor * MULTA_ATRASO);
-    const juros = arredonda(boleto.valor * JUROS_MES * (dias / 30));
+    const pleno = valorPleno(boleto.valor);
+    const juros = arredonda(pleno * CONTRATO.jurosMoraMes * (dias / 30));
     return {
-      diasAtraso: dias, valorOriginal: boleto.valor, multa, juros,
-      total: arredonda(boleto.valor + multa + juros),
-      regra: `Multa de ${(MULTA_ATRASO * 100).toFixed(0)}% + juros de ${(JUROS_MES * 100).toFixed(0)}% ao mês`,
+      diasAtraso: dias,
+      valorComPontualidade: boleto.valor,
+      valorPleno: pleno,
+      descontoPerdido: arredonda(pleno - boleto.valor),
+      juros,
+      correcaoIpca: null,
+      total: arredonda(pleno + juros),
+      regra: 'Cláusula 4.3: valor pleno (sem o desconto de pontualidade) + IPCA + juros de mora de 1% ao mês',
     };
   }
-
   function extratoDoFormando(adesao) {
     const bs = adesao.boletos.map((b) => ({ ...b, status: situacaoBoleto(b) }));
     const pagas = bs.filter((b) => b.status === 'pago')
       .sort((a, b) => (a.pagoEm || a.vencimento).localeCompare(b.pagoEm || b.vencimento));
-    const arredonda = (n) => Math.round(n * 100) / 100;
     const totalPago = arredonda(pagas.reduce((a, b) => a + (b.valorPago || b.valor), 0));
     const emAberto = arredonda(bs.filter((b) => b.status !== 'pago').reduce((a, b) => a + b.valor, 0));
     return {
@@ -914,6 +928,7 @@ main { max-width: none; margin: 0; }
       modoDev: true,
       demo: true,
       cpfExemplo: (DADOS.adesoes.find((x) => x.adesaoId === 'ades-7506-teste') || DADOS.adesoes[0]).cpf,
+      contrato: CONTRATO,
       avisoDados: DADOS.aviso,
       hojeSimulado: HOJE,
     }),
@@ -1839,6 +1854,8 @@ function abaFinanceiro() {
   const diasMaisAntiga = atrasadas.length
     ? Math.max(...atrasadas.map((b) => Math.abs(diasAte(b.vencimento))))
     : 0;
+  // números que vêm do termo de adesão (cláusulas 8.2, 8.3 e 17.1)
+  const { diasInadimplenciaRescisao = 90, honorariosCobranca: honorariosPct = 0.1, diasNotificacaoAntesNegativar: diasNotificacao = 15 } = estado.config?.contrato || {};
 
   moldura(`
     <div class="hero-financeiro">
@@ -1870,14 +1887,16 @@ function abaFinanceiro() {
     ${atrasadas.length ? `
       <div class="faixa alerta">
         <div>
-          <b>${atrasadas.length === 1 ? 'Uma parcela vencida' : `${atrasadas.length} parcelas vencidas`}${diasMaisAntiga >= 45 ? ` — a mais antiga há ${diasMaisAntiga} dias` : ''}.</b>
-          ${diasMaisAntiga >= 45
-            ? ' Depois de 60 dias em aberto o contrato pode ir para cobrança externa, com registro em órgão de proteção ao crédito. Dá para resolver agora, por aqui.'
-            : ' Gere a 2ª via com data nova ou combine um parcelamento.'}
+          <b>${atrasadas.length === 1 ? 'Uma parcela vencida' : `${atrasadas.length} parcelas vencidas`}${diasMaisAntiga >= 30 ? ` — a mais antiga há ${diasMaisAntiga} dias` : ''}.</b>
+          Enquanto houver parcela em aberto, a participação nos eventos, ensaios e a retirada de
+          convites ficam suspensas (cláusula 8.1).
+          ${diasMaisAntiga >= 60
+            ? ` Acima de ${diasInadimplenciaRescisao} dias o contrato pode ser rescindido (17.1), e a cobrança extrajudicial acrescenta ${(honorariosPct * 100).toFixed(0)}% de honorários (8.3). Qualquer inscrição em cadastro de proteção ao crédito é avisada antes, por escrito, com ${diasNotificacao} dias para regularizar (8.2).`
+            : ' Gere a 2ª via com data nova ou proponha uma reprogramação.'}
         </div>
       </div>
       <div class="acoes dupla" style="margin-bottom:12px">
-        <button class="botao secundario" id="renegociar">Renegociar o atraso</button>
+        <button class="botao secundario" id="renegociar">Reprogramar o pagamento</button>
         <button class="botao secundario" data-boleto="${escapar(atrasadas[0].id)}">Ver a parcela vencida</button>
       </div>` : ''}
 
@@ -1924,24 +1943,24 @@ function abaFinanceiro() {
 }
 
 // ---------- antecipar / quitar ----------------------------------------------
-// Desconto de 1% ao mês de antecipação sobre cada parcela, com teto de 15% —
-// é a régua que a equipe usa para propor pagamento à vista. A simulação é só
-// uma conta na tela: quem fecha o valor é a equipe.
-const DESCONTO_MES = 0.01;
-const DESCONTO_TETO = 0.15;
-
+// O termo de adesão não prevê desconto por antecipação: o único desconto é o de
+// pontualidade da cláusula 4.1, que já vale para quem paga até o vencimento.
+// Então aqui a conta é simples — a soma das parcelas com o desconto mantido — e
+// qualquer condição diferente é negociada com a equipe.
 function simularLote(boletos) {
-  const hojeD = new Date(`${hoje()}T12:00:00`);
-  let bruto = 0, liquido = 0;
+  let comPontualidade = 0, pleno = 0;
   for (const b of boletos) {
-    const meses = Math.max(0, (new Date(`${b.vencimento}T12:00:00`) - hojeD) / (30 * 86400000));
-    const taxa = Math.min(DESCONTO_TETO, meses * DESCONTO_MES);
-    bruto += b.valor;
-    liquido += b.valor * (1 - taxa);
+    comPontualidade += b.valor;
+    pleno += b.valorPleno || b.valor;
   }
-  bruto = Math.round(bruto * 100) / 100;
-  liquido = Math.round(liquido * 100) / 100;
-  return { qtd: boletos.length, bruto, liquido, desconto: Math.round((bruto - liquido) * 100) / 100 };
+  comPontualidade = Math.round(comPontualidade * 100) / 100;
+  pleno = Math.round(pleno * 100) / 100;
+  return {
+    qtd: boletos.length,
+    bruto: pleno,
+    liquido: comPontualidade,
+    desconto: Math.round((pleno - comPontualidade) * 100) / 100,
+  };
 }
 
 function simulacaoAntecipacao() {
@@ -1963,25 +1982,25 @@ function simulacaoAntecipacao() {
       <button class="opcao-antecipa" data-opcao="${o.id}">
         <div class="quando">
           <strong>${o.rotulo}</strong>
-          <span>${s.qtd} parcela${s.qtd > 1 ? 's' : ''} · ${brl(s.bruto)} sem desconto</span>
+          <span>${s.qtd} parcela${s.qtd > 1 ? 's' : ''} · valor pleno ${brl(s.bruto)}</span>
         </div>
         <div class="quanto">
           <b>${brl(s.liquido)}</b>
-          <span class="economia">economia de ${brl(s.desconto)}</span>
+          <span class="economia">com o desconto de pontualidade</span>
         </div>
       </button>`;
   };
 
   abrirFolha(`
     <h2>Antecipar ou <em>quitar</em></h2>
-    <div class="sub">Quanto antes a parcela é paga, maior o desconto: 1% ao mês de antecipação, até 15%.</div>
+    <div class="sub">Pagar adiantado mantém o desconto de pontualidade da cláusula 4.1 em todas as parcelas do lote.</div>
 
-    ${vencidas.length ? `<div class="faixa alerta">As ${vencidas.length === 1 ? 'parcelas vencidas entram' : 'parcelas vencidas entram'} pelo valor cheio — desconto só vale para o que ainda não venceu.</div>` : ''}
+    ${vencidas.length ? `<div class="faixa alerta">${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'} pelo valor pleno, com juros de mora — o desconto de pontualidade só vale para o que ainda não venceu (cláusula 4.3).</div>` : ''}
 
     <div class="lista-antecipa">${opcoes.map(linha).join('')}</div>
 
-    <p class="rodape-nota">Simulação. A equipe confere as datas e confirma o valor final antes de
-    emitir o boleto único — o desconto não é aplicado automaticamente.</p>
+    <p class="rodape-nota">Simulação pela régua do contrato: o termo não prevê desconto extra por
+    antecipação. A equipe confere e confirma o valor antes de emitir o boleto único.</p>
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
   `, (el) => {
     el.querySelectorAll('[data-opcao]').forEach((b) => b.addEventListener('click', () => {
@@ -1999,9 +2018,9 @@ function confirmarAntecipacao(opcao) {
     <h2>${escapar(opcao.rotulo)}</h2>
     <div class="sub">Parcela ${primeira.parcela} a ${ultima.parcela} · vencimentos de ${mesAno(primeira.vencimento)} a ${mesAno(ultima.vencimento)}</div>
 
-    <div class="dado"><span>Soma das parcelas</span><b>${brl(s.bruto)}</b></div>
-    <div class="dado"><span>Desconto pela antecipação</span><b class="verde">− ${brl(s.desconto)}</b></div>
-    <div class="dado"><span>Valor à vista</span><b class="destaque-valor">${brl(s.liquido)}</b></div>
+    <div class="dado"><span>Soma pelo valor pleno</span><b>${brl(s.bruto)}</b></div>
+    <div class="dado"><span>Desconto de pontualidade <small>(cláusula 4.1)</small></span><b class="verde">− ${brl(s.desconto)}</b></div>
+    <div class="dado"><span>Total a pagar</span><b class="destaque-valor">${brl(s.liquido)}</b></div>
 
     <div class="acoes dupla">
       <button class="botao" id="pedir-antecipa">Pedir esta proposta</button>
@@ -2060,10 +2079,19 @@ async function abrirBoleto(id) {
   const corpo = `
     <h2>Parcela ${b.parcela}</h2>
     <div class="sub">${escapar(ROTULO_STATUS[b.status])} · vence em ${dataLonga(b.vencimento)}</div>
-    <div class="dado"><span>Valor${b.encargos ? ' da parcela' : ''}</span><b>${brl(b.valor)}</b></div>
     ${b.encargos ? `
-      <div class="dado"><span>Multa e juros <small>(${escapar(b.encargos.regra)})</small></span><b>+ ${brl(b.encargos.multa + b.encargos.juros)}</b></div>
-      <div class="dado"><span>Valor atualizado</span><b class="destaque-valor">${brl(b.valorAtualizado)}</b></div>` : ''}
+      <div class="dado"><span>Valor pleno <small>(cláusula 4.3)</small></span><b>${brl(b.encargos.valorPleno)}</b></div>
+      <div class="dado"><span>Juros de mora <small>(1% ao mês, ${b.encargos.diasAtraso} dias)</small></span><b>+ ${brl(b.encargos.juros)}</b></div>
+      <div class="dado"><span>Correção IPCA</span><b>a apurar pelo índice do período</b></div>
+      <div class="dado"><span>Total da 2ª via</span><b class="destaque-valor">${brl(b.valorAtualizado)}</b></div>
+    ` : `
+      <div class="dado"><span>Pagando até o vencimento</span><b class="destaque-valor">${brl(b.valor)}</b></div>
+      ${b.valorPleno && b.status !== 'pago' ? `
+        <div class="dado">
+          <span>Valor pleno, se pagar depois <small>(cláusula 4.4)</small></span>
+          <b>${brl(b.valorPleno)}</b>
+        </div>` : ''}
+    `}
     ${b.pagoEm ? `<div class="dado"><span>Pago em</span><b>${dataCurta(b.pagoEm)}</b></div>` : ''}
     <div class="dado"><span>Descrição</span><b>${escapar(b.descricao)}</b></div>
 
@@ -2363,8 +2391,13 @@ function formularioSegundaVia(id, boleto, erro) {
     <h2>2ª via da <em>parcela ${boleto.parcela}</em></h2>
     <div class="sub">Venceu em ${dataCurta(boleto.vencimento)} · ${atraso} dia${atraso === 1 ? '' : 's'} de atraso</div>
 
-    <div class="dado"><span>Valor da parcela</span><b>${brl(boleto.valor)}</b></div>
-    <div class="dado"><span>Encargos</span><b>Multa de 2% + juros de 1% ao mês</b></div>
+    <div class="dado"><span>Com pontualidade</span><b>${brl(boleto.valor)}</b></div>
+    <div class="dado"><span>Valor pleno <small>(sem o desconto da cláusula 4.1)</small></span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
+    <div class="faixa info" style="margin-top:14px">
+      <div>Pela <b>cláusula 4.3</b>, a parcela não paga no vencimento passa a valer o preço pleno,
+      com correção pelo IPCA e juros de mora de 1% ao mês. O desconto de pontualidade vale só para
+      quem paga até a data.</div>
+    </div>
 
     <div class="secao-titulo">Nova data de vencimento</div>
     <div class="lista-antecipa">
@@ -2378,14 +2411,15 @@ function formularioSegundaVia(id, boleto, erro) {
         </button>`).join('')}
     </div>
     ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
-    <p class="rodape-nota">O valor final é conferido pelo banco na hora do pagamento. Se você já
-    pagou esta parcela, envie o comprovante em vez de gerar a 2ª via.</p>
+    <p class="rodape-nota">Os valores acima não incluem a correção pelo IPCA do período, apurada
+    pelo financeiro. Se você já pagou esta parcela, envie o comprovante em vez de gerar a 2ª via.</p>
     <div class="acoes"><button class="botao fantasma" id="voltar-boleto">Voltar</button></div>
   `, (el) => {
     // preenche a prévia de cada data
     for (const o of opcoes) {
       const dias = Math.max(0, Math.round((new Date(`${o.iso}T12:00:00`) - new Date(`${boleto.vencimento}T12:00:00`)) / 86400000));
-      const total = boleto.valor * (1 + 0.02) + boleto.valor * 0.01 * (dias / 30);
+      const pleno = boleto.valorPleno || boleto.valor;
+      const total = pleno + pleno * 0.01 * (dias / 30);
       el.querySelector(`#v-${o.iso}`).textContent = brl(Math.round(total * 100) / 100);
     }
 
@@ -2460,41 +2494,44 @@ function formularioContestacao(id, boleto) {
   });
 }
 
-// ---------- renegociar atraso ------------------------------------------------
-// Regra do protótipo, a confirmar: entrada de 20% do total vencido e o saldo em
-// até 3 vezes, sem desconto. Só simula — quem fecha é a equipe.
+// ---------- reprogramar o pagamento ------------------------------------------
+// Cláusula 17.3 do termo: toda reprogramação da forma de pagamento tem taxa fixa
+// de R$ 75,00. O contrato não fixa entrada nem número de parcelas — quem combina
+// isso é a equipe, então aqui o formando só propõe.
 function simulacaoRenegociacao() {
   const vencidas = estado.financeiro.boletos
     .filter((b) => b.status === 'em_atraso')
     .sort((a, b) => a.vencimento.localeCompare(b.vencimento));
   if (!vencidas.length) return avisar('Você não tem parcelas vencidas');
 
-  const total = Math.round(vencidas.reduce((a, b) => a + b.valor, 0) * 100) / 100;
-  const entrada = Math.round(total * 0.2 * 100) / 100;
-  const saldo = Math.round((total - entrada) * 100) / 100;
-  const planos = [1, 2, 3].map((n) => ({ n, parcela: Math.round((saldo / n) * 100) / 100 }));
+  const taxa = estado.config?.contrato?.taxaReprogramacao ?? 75;
+  const comPontualidade = Math.round(vencidas.reduce((a, b) => a + b.valor, 0) * 100) / 100;
+  const pleno = Math.round(vencidas.reduce((a, b) => a + (b.valorPleno || b.valor), 0) * 100) / 100;
+  const propostas = [1, 2, 3].map((n) => ({ n, parcela: Math.round(((pleno + taxa) / n) * 100) / 100 }));
 
   abrirFolha(`
-    <h2>Renegociar <em>o atraso</em></h2>
-    <div class="sub">${vencidas.length} parcela${vencidas.length > 1 ? 's' : ''} vencida${vencidas.length > 1 ? 's' : ''} · ${brl(total)}</div>
+    <h2>Reprogramar <em>o pagamento</em></h2>
+    <div class="sub">${vencidas.length} parcela${vencidas.length > 1 ? 's' : ''} vencida${vencidas.length > 1 ? 's' : ''}</div>
 
-    <div class="dado"><span>Entrada (20%)</span><b>${brl(entrada)}</b></div>
-    <div class="dado"><span>Saldo a parcelar</span><b>${brl(saldo)}</b></div>
+    <div class="dado"><span>Soma com pontualidade</span><b>${brl(comPontualidade)}</b></div>
+    <div class="dado"><span>Valor pleno <small>(cláusula 4.3, sem o desconto)</small></span><b>${brl(pleno)}</b></div>
+    <div class="dado"><span>Taxa de reprogramação <small>(cláusula 17.3)</small></span><b>${brl(taxa)}</b></div>
 
-    <div class="secao-titulo">Como dividir o saldo</div>
+    <div class="secao-titulo">Em quantas vezes</div>
     <div class="lista-antecipa">
-      ${planos.map((p) => `
+      ${propostas.map((p) => `
         <button class="opcao-antecipa" data-plano="${p.n}">
           <div class="quando">
             <strong>${p.n}× de ${brl(p.parcela)}</strong>
-            <span>além da entrada de ${brl(entrada)}</span>
+            <span>valor pleno + taxa, sem a correção do IPCA</span>
           </div>
-          <div class="quanto"><b>${brl(total)}</b><span class="economia">total</span></div>
+          <div class="quanto"><b>${brl(pleno + taxa)}</b><span class="economia">total</span></div>
         </button>`).join('')}
     </div>
 
-    <p class="rodape-nota">Simulação sem desconto: a renegociação organiza o pagamento, não reduz o
-    valor. A equipe confirma as datas e emite os boletos.</p>
+    <p class="rodape-nota">Proposta, não acordo fechado: o contrato não fixa entrada nem número de
+    parcelas para a reprogramação. A equipe confere, aplica a correção do IPCA do período e
+    confirma as datas antes de emitir os boletos.</p>
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
   `, (el) => {
     el.querySelectorAll('[data-plano]').forEach((b) => b.addEventListener('click', async () => {
@@ -2505,11 +2542,11 @@ function simulacaoRenegociacao() {
           body: JSON.stringify({
             tipo: 'renegociacao',
             quantidade: Number(b.dataset.plano),
-            mensagem: `${vencidas.length} parcela(s) vencida(s), ${brl(total)}: entrada de ${brl(entrada)} + ${b.dataset.plano}× de ${brl(saldo / Number(b.dataset.plano))}.`,
+            mensagem: `${vencidas.length} parcela(s) vencida(s). Proposta: ${b.dataset.plano}× de ${brl((pleno + taxa) / Number(b.dataset.plano))} (valor pleno ${brl(pleno)} + taxa ${brl(taxa)}, sem IPCA).`,
           }),
         });
         fecharFolha();
-        avisar(`Pedido enviado — protocolo ${r.protocolo}`);
+        avisar(`Proposta enviada — protocolo ${r.protocolo}`);
       } catch { avisar('Não foi possível enviar agora'); }
     }));
   });
