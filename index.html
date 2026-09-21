@@ -716,6 +716,43 @@ main { max-width: none; margin: 0; }
 }
 .item .quanto .economia { display: block; font-size: 11px; color: var(--texto-suave); }
 
+/* ---------- citação de cláusula com "?" e balão ---------- */
+.cita { position: relative; white-space: nowrap; font-size: .82em; color: var(--texto-suave); }
+.ajuda {
+  display: inline-grid; place-items: center; width: 15px; height: 15px; margin-left: 4px;
+  padding: 0; border-radius: 50%; cursor: help; vertical-align: 1px;
+  border: 1px solid currentColor; background: transparent; color: var(--accent-txt);
+  font-family: var(--sans); font-size: 10px; font-weight: 700; line-height: 1;
+}
+.ajuda:hover, .ajuda:focus-visible { background: var(--violet); border-color: var(--violet); color: #fff; }
+.ajuda:focus-visible { outline: 2px solid var(--violet-soft); outline-offset: 2px; }
+
+.balao {
+  position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%) translateY(4px);
+  width: max-content; max-width: min(320px, 78vw); z-index: 200;
+  padding: 12px 14px; border-radius: var(--raio);
+  background: var(--night); color: var(--cream);
+  font-family: var(--sans); font-size: 12.5px; line-height: 1.5; white-space: normal; text-align: left;
+  box-shadow: 0 10px 30px rgba(12, 7, 21, .45);
+  opacity: 0; visibility: hidden; transition: opacity .15s, transform .15s, visibility .15s;
+}
+.balao b { display: block; font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--gold-soft); margin-bottom: 5px; }
+.balao::after {
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: var(--night);
+}
+.cita:hover .balao, .ajuda:focus-visible + .balao, .cita:focus-within .balao {
+  opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+}
+@media (prefers-reduced-motion: reduce) { .balao { transition: none; } }
+
+/* perto da borda direita o balão se ajusta para não sair da tela */
+@media (max-width: 560px) {
+  .balao { left: auto; right: -8px; transform: translateY(4px); max-width: 76vw; }
+  .balao::after { left: auto; right: 24px; transform: none; }
+  .cita:hover .balao, .cita:focus-within .balao { transform: translateY(0); }
+}
+
 </style>
 </head>
 <body>
@@ -864,19 +901,65 @@ main { max-width: none; margin: 0; }
     return s;
   }
 
-  function calcularEncargos(boleto, ate) {
+  // --- IPCA (IBGE) -----------------------------------------------------------
+  // Cláusula 4.3 manda corrigir pelo IPCA. A série mensal vem da API pública de
+  // agregados do IBGE (tabela 1737, variável 63). Se a consulta falhar, o cálculo
+  // segue sem correção e a tela avisa.
+  const IPCA_URL = 'https://servicodados.ibge.gov.br/api/v3/agregados/1737/periodos/-36/variaveis/63?localidades=N1[all]';
+  let ipcaSerie = null;
+
+  async function serieIpca() {
+    if (ipcaSerie) return ipcaSerie;
+    try {
+      const resp = await fetch(IPCA_URL);
+      if (!resp.ok) throw new Error(String(resp.status));
+      const dados = await resp.json();
+      const bruto = dados?.[0]?.resultados?.[0]?.series?.[0]?.serie ?? {};
+      const serie = {};
+      for (const [mes, valor] of Object.entries(bruto)) {
+        const n = Number(String(valor).replace(',', '.'));
+        if (Number.isFinite(n)) serie[mes] = n;
+      }
+      ipcaSerie = serie;
+      return serie;
+    } catch { return null; }
+  }
+
+  function fatorIpca(serie, de, ate) {
+    if (!serie) return { fator: 1, meses: [], publicadoAte: null, disponivel: false };
+    const meses = Object.keys(serie).sort();
+    const chave = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
+    let fator = 1;
+    const usados = [];
+    const cursor = new Date(de.getFullYear(), de.getMonth() + 1, 1);
+    while (cursor <= ate) {
+      const k = chave(cursor);
+      if (serie[k] != null) { fator *= 1 + serie[k] / 100; usados.push(k); }
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+    return { fator, meses: usados, publicadoAte: meses[meses.length - 1] || null, disponivel: true };
+  }
+
+  async function calcularEncargos(boleto, ate) {
     const venceu = new Date(`${boleto.vencimentoOriginal || boleto.vencimento}T12:00:00`);
     const dias = Math.max(0, Math.round((ate - venceu) / 86400000));
     const pleno = valorPleno(boleto.valor);
-    const juros = arredonda(pleno * CONTRATO.jurosMoraMes * (dias / 30));
+    const serie = await serieIpca();
+    const ipca = fatorIpca(serie, venceu, ate);
+    const corrigido = arredonda(pleno * ipca.fator);
+    const correcaoIpca = arredonda(corrigido - pleno);
+    const juros = arredonda(corrigido * CONTRATO.jurosMoraMes * (dias / 30));
     return {
       diasAtraso: dias,
       valorComPontualidade: boleto.valor,
       valorPleno: pleno,
       descontoPerdido: arredonda(pleno - boleto.valor),
+      correcaoIpca,
+      ipcaMeses: ipca.meses.length,
+      ipcaPublicadoAte: ipca.publicadoAte,
+      ipcaDisponivel: ipca.disponivel,
       juros,
-      correcaoIpca: null,
-      total: arredonda(pleno + juros),
+      total: arredonda(corrigido + juros),
       regra: 'Cláusula 4.3: valor pleno (sem o desconto de pontualidade) + IPCA + juros de mora de 1% ao mês',
     };
   }
@@ -1117,7 +1200,7 @@ main { max-width: none; margin: 0; }
   };
 
   // Rotas com id no caminho.
-  function rotaComId(metodo, caminho, token, corpo) {
+  async function rotaComId(metodo, caminho, token, corpo) {
     const m1 = caminho.match(/^\/financeiro\/([\w-]+)$/);
     if (metodo === 'GET' && m1) {
       const a = daSessao(token);
@@ -1148,7 +1231,7 @@ main { max-width: none; margin: 0; }
       if ((novaData - hojeD) / 86400000 > 30) throw erro(400, { erro: 'data_longe' });
 
       b.vencimentoOriginal = b.vencimentoOriginal || b.vencimento;
-      const encargos = calcularEncargos(b, novaData);
+      const encargos = await calcularEncargos(b, novaData);
       b.vencimento = corpo.novoVencimento;
       b.linhaDigitavel = linhaFalsa(`${b.id}-${corpo.novoVencimento}`);
       b.valorAtualizado = encargos.total;
@@ -1244,9 +1327,13 @@ main { max-width: none; margin: 0; }
   }
 
   // Ponto de entrada usado pelo app no lugar do fetch.
-  window.API_DEMO = function (metodo, caminho, corpo, token) {
+  // Assíncrona porque a 2ª via consulta o IPCA no IBGE. As rotas diretas
+  // continuam síncronas — o await aqui atende as duas formas.
+  window.API_DEMO = async function (metodo, caminho, corpo, token) {
     const direta = ROTAS[`${metodo} ${caminho}`];
-    const resposta = direta ? direta(token, corpo || {}) : rotaComId(metodo, caminho, token, corpo || {});
+    const resposta = direta
+      ? direta(token, corpo || {})
+      : await rotaComId(metodo, caminho, token, corpo || {});
     if (resposta === undefined) throw erro(404, { erro: 'rota_nao_encontrada' });
     return resposta;
   };
@@ -1594,6 +1681,29 @@ const CURSOS = [
 
 const cursoDe = (nome) => CURSOS.find((c) => c.re.test(nome || '')) || CURSOS[CURSOS.length - 1];
 
+// ---------- cláusulas do contrato --------------------------------------------
+// Texto igual ao do termo de adesão (adesao-contrato.template.ts). Toda citação
+// na tela vira um "?" que abre o trecho, para o formando conferir sem sair daqui.
+const CLAUSULAS = {
+  '4.1': 'Os valores das parcelas discriminados no ORÇAMENTO (ANEXO I) e no quadro de pagamento correspondem ao valor pleno da contraprestação. A título de incentivo à pontualidade, a CONTRATADA concede ao CONTRATANTE desconto de 20% sobre o valor de cada parcela que for integralmente quitada até a respectiva data de vencimento.',
+  '4.2': 'O desconto tem natureza de desconto condicional, apurado parcela a parcela, e não constitui, sob nenhuma hipótese, multa, penalidade ou cláusula penal. A ausência do desconto decorre exclusivamente do não implemento da condição — o pagamento até o vencimento — e restringe-se à parcela paga em atraso.',
+  '4.3': 'Não quitada a parcela até o vencimento, esta tornar-se-á exigível pelo seu valor pleno, sem o desconto, acrescida de correção monetária pelo IPCA e juros de mora de 1% (um por cento) ao mês, calculados pro rata die.',
+  '4.4': 'Os instrumentos de cobrança informarão, para cada parcela, o valor com pontualidade e o respectivo valor pleno.',
+  '8.1': 'O CONTRATANTE que estiver inadimplente com quaisquer parcelas do contrato terá seus direitos suspensos, ficando impedido de participar de eventos, ensaios e cerimônias (incluindo festa de meio de curso, foto-convite, pré-eventos e formatura), bem como de retirar convites ou benefícios, até a regularização total do débito.',
+  '8.2': 'A inscrição do CONTRATANTE em cadastro de proteção ao crédito será precedida de notificação por escrito, com prazo de 15 (quinze) dias para regularização.',
+  '8.3': 'A parte que der causa à cobrança extrajudicial de valores devidos por força deste contrato arcará com honorários de cobrança de 10% (dez por cento) sobre o valor exigido, obrigação que se aplica reciprocamente a ambas as partes.',
+  '17.1': 'Este contrato poderá ser rescindido: (a) por acordo entre as partes; (b) por inadimplência superior a 90 (noventa) dias; ou (c) por descumprimento comprovado de suas cláusulas.',
+  '17.3': 'Toda reprogramação da forma de pagamento acordada gera uma taxa de alteração fixa no valor de R$ 75,00 (setenta e cinco reais).',
+};
+
+// Citação com o "?" ao lado. O balão abre no hover e também no foco pelo
+// teclado; no celular, o toque no "?" resolve.
+function clausula(numero, prefixo = 'cláusula ') {
+  const texto = CLAUSULAS[numero];
+  if (!texto) return `<small>(cláusula ${escapar(numero)})</small>`;
+  return `<span class="cita">(${escapar(prefixo)}${escapar(numero)})<button class="ajuda" type="button" aria-label="Ver a cláusula ${escapar(numero)}">?</button><span class="balao" role="tooltip"><b>Cláusula ${escapar(numero)}</b>${escapar(texto)}</span></span>`;
+}
+
 // Rabisco de caneta em volta da palavra, como no hero do site de formaturas.
 // Vai atrás do texto, esticado pelo tamanho do span.
 const RABISCO = `<svg class="rabisco" viewBox="0 0 200 64" preserveAspectRatio="none" aria-hidden="true">
@@ -1889,9 +1999,9 @@ function abaFinanceiro() {
         <div>
           <b>${atrasadas.length === 1 ? 'Uma parcela vencida' : `${atrasadas.length} parcelas vencidas`}${diasMaisAntiga >= 30 ? ` — a mais antiga há ${diasMaisAntiga} dias` : ''}.</b>
           Enquanto houver parcela em aberto, a participação nos eventos, ensaios e a retirada de
-          convites ficam suspensas (cláusula 8.1).
+          convites ficam suspensas ${clausula("8.1")}.
           ${diasMaisAntiga >= 60
-            ? ` Acima de ${diasInadimplenciaRescisao} dias o contrato pode ser rescindido (17.1), e a cobrança extrajudicial acrescenta ${(honorariosPct * 100).toFixed(0)}% de honorários (8.3). Qualquer inscrição em cadastro de proteção ao crédito é avisada antes, por escrito, com ${diasNotificacao} dias para regularizar (8.2).`
+            ? ` Acima de ${diasInadimplenciaRescisao} dias o contrato pode ser rescindido ${clausula("17.1", "")}, e a cobrança extrajudicial acrescenta ${(honorariosPct * 100).toFixed(0)}% de honorários ${clausula("8.3", "")}. Qualquer inscrição em cadastro de proteção ao crédito é avisada antes, por escrito, com ${diasNotificacao} dias para regularizar ${clausula("8.2", "")}.`
             : ' Gere a 2ª via com data nova ou proponha uma reprogramação.'}
         </div>
       </div>
@@ -1993,9 +2103,9 @@ function simulacaoAntecipacao() {
 
   abrirFolha(`
     <h2>Antecipar ou <em>quitar</em></h2>
-    <div class="sub">Pagar adiantado mantém o desconto de pontualidade da cláusula 4.1 em todas as parcelas do lote.</div>
+    <div class="sub">Pagar adiantado mantém o desconto de pontualidade ${clausula("4.1")} em todas as parcelas do lote.</div>
 
-    ${vencidas.length ? `<div class="faixa alerta">${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'} pelo valor pleno, com juros de mora — o desconto de pontualidade só vale para o que ainda não venceu (cláusula 4.3).</div>` : ''}
+    ${vencidas.length ? `<div class="faixa alerta">${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'} pelo valor pleno, com juros de mora — o desconto de pontualidade só vale para o que ainda não venceu ${clausula("4.3")}.</div>` : ''}
 
     <div class="lista-antecipa">${opcoes.map(linha).join('')}</div>
 
@@ -2019,7 +2129,7 @@ function confirmarAntecipacao(opcao) {
     <div class="sub">Parcela ${primeira.parcela} a ${ultima.parcela} · vencimentos de ${mesAno(primeira.vencimento)} a ${mesAno(ultima.vencimento)}</div>
 
     <div class="dado"><span>Soma pelo valor pleno</span><b>${brl(s.bruto)}</b></div>
-    <div class="dado"><span>Desconto de pontualidade <small>(cláusula 4.1)</small></span><b class="verde">− ${brl(s.desconto)}</b></div>
+    <div class="dado"><span>Desconto de pontualidade ${clausula("4.1")}</span><b class="verde">− ${brl(s.desconto)}</b></div>
     <div class="dado"><span>Total a pagar</span><b class="destaque-valor">${brl(s.liquido)}</b></div>
 
     <div class="acoes dupla">
@@ -2080,15 +2190,20 @@ async function abrirBoleto(id) {
     <h2>Parcela ${b.parcela}</h2>
     <div class="sub">${escapar(ROTULO_STATUS[b.status])} · vence em ${dataLonga(b.vencimento)}</div>
     ${b.encargos ? `
-      <div class="dado"><span>Valor pleno <small>(cláusula 4.3)</small></span><b>${brl(b.encargos.valorPleno)}</b></div>
+      <div class="dado"><span>Valor pleno ${clausula("4.3")}</span><b>${brl(b.encargos.valorPleno)}</b></div>
+      <div class="dado">
+        <span>Correção IPCA ${b.encargos.ipcaMeses ? `<small>(${b.encargos.ipcaMeses} ${b.encargos.ipcaMeses === 1 ? 'mês' : 'meses'}, IBGE)</small>` : ''}</span>
+        <b>${b.encargos.ipcaDisponivel
+          ? (b.encargos.correcaoIpca ? `+ ${brl(b.encargos.correcaoIpca)}` : 'sem índice fechado no período')
+          : 'não foi possível consultar o IBGE'}</b>
+      </div>
       <div class="dado"><span>Juros de mora <small>(1% ao mês, ${b.encargos.diasAtraso} dias)</small></span><b>+ ${brl(b.encargos.juros)}</b></div>
-      <div class="dado"><span>Correção IPCA</span><b>a apurar pelo índice do período</b></div>
       <div class="dado"><span>Total da 2ª via</span><b class="destaque-valor">${brl(b.valorAtualizado)}</b></div>
     ` : `
       <div class="dado"><span>Pagando até o vencimento</span><b class="destaque-valor">${brl(b.valor)}</b></div>
       ${b.valorPleno && b.status !== 'pago' ? `
         <div class="dado">
-          <span>Valor pleno, se pagar depois <small>(cláusula 4.4)</small></span>
+          <span>Valor pleno, se pagar depois ${clausula("4.4")}</span>
           <b>${brl(b.valorPleno)}</b>
         </div>` : ''}
     `}
@@ -2392,9 +2507,9 @@ function formularioSegundaVia(id, boleto, erro) {
     <div class="sub">Venceu em ${dataCurta(boleto.vencimento)} · ${atraso} dia${atraso === 1 ? '' : 's'} de atraso</div>
 
     <div class="dado"><span>Com pontualidade</span><b>${brl(boleto.valor)}</b></div>
-    <div class="dado"><span>Valor pleno <small>(sem o desconto da cláusula 4.1)</small></span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
+    <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
     <div class="faixa info" style="margin-top:14px">
-      <div>Pela <b>cláusula 4.3</b>, a parcela não paga no vencimento passa a valer o preço pleno,
+      <div>Pela <b>cláusula 4.3</b> ${clausula("4.3", "")}, a parcela não paga no vencimento passa a valer o preço pleno,
       com correção pelo IPCA e juros de mora de 1% ao mês. O desconto de pontualidade vale só para
       quem paga até a data.</div>
     </div>
@@ -2411,8 +2526,9 @@ function formularioSegundaVia(id, boleto, erro) {
         </button>`).join('')}
     </div>
     ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
-    <p class="rodape-nota">Os valores acima não incluem a correção pelo IPCA do período, apurada
-    pelo financeiro. Se você já pagou esta parcela, envie o comprovante em vez de gerar a 2ª via.</p>
+    <p class="rodape-nota">A prévia mostra valor pleno e juros; a correção pelo IPCA (série do IBGE)
+    entra no valor final da 2ª via. Se você já pagou esta parcela, envie o comprovante em vez de gerar
+    a 2ª via.</p>
     <div class="acoes"><button class="botao fantasma" id="voltar-boleto">Voltar</button></div>
   `, (el) => {
     // preenche a prévia de cada data
@@ -2514,8 +2630,8 @@ function simulacaoRenegociacao() {
     <div class="sub">${vencidas.length} parcela${vencidas.length > 1 ? 's' : ''} vencida${vencidas.length > 1 ? 's' : ''}</div>
 
     <div class="dado"><span>Soma com pontualidade</span><b>${brl(comPontualidade)}</b></div>
-    <div class="dado"><span>Valor pleno <small>(cláusula 4.3, sem o desconto)</small></span><b>${brl(pleno)}</b></div>
-    <div class="dado"><span>Taxa de reprogramação <small>(cláusula 17.3)</small></span><b>${brl(taxa)}</b></div>
+    <div class="dado"><span>Valor pleno ${clausula("4.3")}</span><b>${brl(pleno)}</b></div>
+    <div class="dado"><span>Taxa de reprogramação ${clausula("17.3")}</span><b>${brl(taxa)}</b></div>
 
     <div class="secao-titulo">Em quantas vezes</div>
     <div class="lista-antecipa">
