@@ -670,6 +670,42 @@ main { max-width: none; margin: 0; }
 .dado b.verde { color: var(--positivo); }
 .dado b.destaque-valor { font-family: var(--serif); font-size: 26px; line-height: 1.1; }
 
+/* ---------- comprovante de pagamento ---------- */
+.lista-comprovantes { display: grid; gap: 8px; margin-bottom: 4px; }
+.comprovante {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--linha); border-radius: var(--raio);
+  background: var(--superficie-2);
+}
+.comprovante .ico { flex: none; display: grid; place-items: center; width: 22px; color: var(--texto-suave); }
+.comprovante .ico svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+.comprovante .quando { flex: 1; min-width: 0; }
+.comprovante .quando strong { display: block; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comprovante .quando span { font-size: 11.5px; color: var(--texto-suave); }
+.comprovante .marca-status { margin-top: 0; flex: none; }
+
+.campo input[type="file"] {
+  padding: 12px 14px; font-size: 13px; cursor: pointer;
+  background: var(--superficie-2);
+}
+.campo input[type="file"]::file-selector-button {
+  margin-right: 12px; padding: 8px 14px; cursor: pointer;
+  border: 1px solid var(--linha); border-radius: var(--raio-btn);
+  background: var(--superficie); color: var(--texto);
+  font: inherit; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+}
+.previa-comprovante {
+  display: block; width: 100%; max-height: 260px; object-fit: contain;
+  border: 1px solid var(--linha); border-radius: var(--raio);
+  background: var(--superficie-2); margin-bottom: 14px;
+}
+.previa-pdf {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding: 14px; border: 1px dashed var(--linha); border-radius: var(--raio);
+  background: var(--superficie-2); font-size: 13px;
+}
+.previa-pdf svg { width: 22px; height: 22px; stroke: var(--texto-suave); fill: none; stroke-width: 1.5; flex: none; }
+
 </style>
 </head>
 <body>
@@ -706,6 +742,8 @@ main { max-width: none; margin: 0; }
   const pedidosDoDia = new Map();
   const sessoes = new Map();   // token -> { adesaoId, etapa? }
   const solicitacoes = [];
+  const contatoPendente = new Map();   // adesaoId -> { email, telefone, pedidoEm }
+  const comprovantes = [];             // { id, adesaoId, billId, arquivo, ... }
   const emitidos = new Set();
 
   const soDigitos = (s) => String(s || '').replace(/\D/g, '');
@@ -764,6 +802,10 @@ main { max-width: none; margin: 0; }
         : null,
     };
   }
+
+  const comprovantesDoBoleto = (adesaoId, billId) => comprovantes
+    .filter((c) => c.adesaoId === adesaoId && c.billId === billId)
+    .map(({ conteudo, adesaoId: _a, ...resto }) => resto);
 
   function daSessao(token, { permitirEscolha = false } = {}) {
     const s = sessoes.get(token);
@@ -856,6 +898,52 @@ main { max-width: none; margin: 0; }
       return { token, expiraEm: new Date(Date.now() + 30 * 60000).toISOString() };
     },
 
+    // meus dados: o formando confere e pede correção; quem confirma é a equipe
+    'GET /perfil': (t) => {
+      const a2 = daSessao(t);
+      const turma = acharTurma(a2.turmaId);
+      return {
+        nome: a2.nome,
+        cpf: a2.cpf.replace(/^(\d{3})(\d{3})(\d{3})(\d{2})$/, '$1.$2.$3-$4'),
+        email: a2.email,
+        telefone: a2.telefone,
+        curso: a2.curso,
+        turma: turma.rotulo,
+        pendente: contatoPendente.get(a2.adesaoId) || null,
+      };
+    },
+
+    'POST /perfil/contato': (t, corpo) => {
+      const a2 = daSessao(t);
+      const novoEmail = String(corpo.email || '').trim();
+      const novoTelefone = soDigitos(corpo.telefone);
+      if (novoEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(novoEmail)) throw erro(400, { erro: 'email_invalido' });
+      if (novoTelefone && (novoTelefone.length < 10 || novoTelefone.length > 13)) throw erro(400, { erro: 'telefone_invalido' });
+      const mudouEmail = novoEmail && novoEmail !== a2.email;
+      const mudouTelefone = novoTelefone && novoTelefone !== soDigitos(a2.telefone);
+      if (!mudouEmail && !mudouTelefone) throw erro(400, { erro: 'nada_mudou' });
+      const pendente = {
+        email: mudouEmail ? novoEmail : null,
+        telefone: mudouTelefone ? novoTelefone : null,
+        pedidoEm: new Date().toISOString(),
+      };
+      contatoPendente.set(a2.adesaoId, pendente);
+      solicitacoes.push({
+        id: `sol-${solicitacoes.length + 1}`,
+        adesaoId: a2.adesaoId,
+        tipo: 'dados_contato',
+        payload: {
+          mensagem: [
+            mudouEmail ? `e-mail: ${a2.email} → ${novoEmail}` : '',
+            mudouTelefone ? `telefone: ${a2.telefone} → ${novoTelefone}` : '',
+          ].filter(Boolean).join(' · '),
+        },
+        status: 'aberta',
+        criadoEm: pendente.pedidoEm,
+      });
+      return { pendente };
+    },
+
     'GET /me': (t) => {
       const a = daSessao(t);
       const turma = acharTurma(a.turmaId);
@@ -936,6 +1024,7 @@ main { max-width: none; margin: 0; }
         linhaDigitavel: escondido ? null : b.linhaDigitavel,
         pdfUrl: escondido ? null : b.pdfUrl,
         urlPagamento: escondido ? null : b.urlPagamento,
+        comprovantes: comprovantesDoBoleto(a.adesaoId, b.id),
       };
     }
 
@@ -974,6 +1063,34 @@ main { max-width: none; margin: 0; }
         pagoEm: b.pagoEm,
         linhaDigitavel: situacaoBoleto(b) === 'agendado' || situacaoBoleto(b) === 'nao_gerado' ? null : b.linhaDigitavel,
       };
+    }
+
+    // Comprovante de pagamento. A parcela não muda de situação: quem dá baixa
+    // é a equipe, depois de conferir.
+    const m4 = caminho.match(/^\/financeiro\/([\w-]+)\/comprovante$/);
+    if (metodo === 'POST' && m4) {
+      const a = daSessao(token);
+      const b = a.boletos.find((x) => x.id === m4[1]);
+      if (!b) throw erro(404, { erro: 'nao_encontrado' });
+      const TIPOS_OK = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+      if (!corpo.arquivo || !TIPOS_OK.includes(corpo.tipo)) throw erro(400, { erro: 'tipo_nao_aceito' });
+      if (Number(corpo.tamanho) > 8 * 1024 * 1024) throw erro(400, { erro: 'arquivo_grande' });
+
+      const registro = {
+        id: `comp-${comprovantes.length + 1}`,
+        adesaoId: a.adesaoId,
+        billId: b.id,
+        arquivo: String(corpo.arquivo).slice(0, 120),
+        tipo: corpo.tipo,
+        tamanho: Number(corpo.tamanho) || 0,
+        observacao: String(corpo.observacao || '').slice(0, 500),
+        status: 'em_analise',
+        enviadoEm: new Date().toISOString(),
+        conteudo: typeof corpo.conteudo === 'string' ? corpo.conteudo : null,
+      };
+      comprovantes.push(registro);
+      const { conteudo, adesaoId, ...semArquivo } = registro;
+      return semArquivo;
     }
 
     return undefined;
@@ -1261,6 +1378,8 @@ const ICONES = {
   sair: '<svg viewBox="0 0 24 24"><path d="M9.5 4.5h-4v15h4M14 8l4 4-4 4M18 12H9"/></svg>',
   menu: '<svg viewBox="0 0 24 24"><path d="M3.5 7h17M3.5 12h17M3.5 17h17"/></svg>',
   tema: '<svg viewBox="0 0 24 24"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4 8.5 8.5 0 1 0 20 14.2Z"/></svg>',
+  pessoa: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.8 20.5c0-3.6 3.2-6.2 7.2-6.2s7.2 2.6 7.2 6.2"/></svg>',
+  anexo: '<svg viewBox="0 0 24 24"><path d="M14 6.5 8 12.5a3 3 0 0 0 4.2 4.2l6.3-6.3a5 5 0 0 0-7-7L5 9.7a7 7 0 0 0 9.9 9.9l5-5"/></svg>',
 };
 
 // ---------- tema claro/escuro ------------------------------------------------
@@ -1369,6 +1488,7 @@ function moldura(conteudo, sub) {
       </nav>
       <div class="lateral-assinatura">transformando histórias.</div>
       <div class="lateral-rodape">
+        <button id="meus-dados">${ICONES.pessoa}<span>Meus dados</span></button>
         <button id="tema">${ICONES.tema}<span>${temaAtual() === 'escuro' ? 'Tema claro' : 'Tema escuro'}</span></button>
         <button id="zap">${ICONES.zap}<span>Falar com a gente</span></button>
         <button id="sair">${ICONES.sair}<span>Sair</span></button>
@@ -1395,6 +1515,7 @@ function moldura(conteudo, sub) {
     </div>`;
 
   app.querySelectorAll('[data-aba]').forEach((b) => b.addEventListener('click', () => { estado.menuAberto = false; irPara(b.dataset.aba); }));
+  app.querySelector('#meus-dados').addEventListener('click', telaMeusDados);
   app.querySelector('#tema').addEventListener('click', alternarTema);
   app.querySelector('#zap').addEventListener('click', abrirWhatsapp);
   app.querySelector('#sair').addEventListener('click', sair);
@@ -1806,9 +1927,31 @@ async function abrirBoleto(id) {
     ` : `
       <div class="faixa info" style="margin-top:16px">Esta parcela ainda não tem boleto. Ele é gerado alguns dias antes do vencimento.</div>
     `}
+
+    ${b.status === 'nao_gerado' ? '' : `
+      <div class="secao-titulo">Comprovante</div>
+      ${(b.comprovantes || []).length ? `
+        <div class="lista-comprovantes">
+          ${b.comprovantes.map((c) => `
+            <div class="comprovante">
+              <span class="ico">${ICONES.anexo}</span>
+              <div class="quando">
+                <strong>${escapar(c.arquivo)}</strong>
+                <span>Enviado em ${dataCurta(c.enviadoEm.slice(0, 10))} · ${Math.max(1, Math.round(c.tamanho / 1024))} KB</span>
+              </div>
+              <span class="marca-status s-em_aberto">${c.status === 'em_analise' ? 'Em análise' : escapar(c.status)}</span>
+            </div>`).join('')}
+        </div>` : `
+        <p class="rodape-nota" style="margin-top:0">
+          Pagou e a parcela ainda não baixou? Anexe o comprovante que a equipe confere.
+        </p>`}
+      <div class="acoes"><button class="botao secundario" id="enviar-comprovante">Enviar comprovante</button></div>
+    `}
+
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>`;
 
   abrirFolha(corpo, (el) => {
+    el.querySelector('#enviar-comprovante')?.addEventListener('click', () => formularioComprovante(id, b));
     el.querySelector('#copiar')?.addEventListener('click', () => copiar(b.linhaDigitavel));
     el.querySelector('#pdf')?.addEventListener('click', () => abrirPdf(id, b));
     el.querySelector('#compartilhar')?.addEventListener('click', () => compartilharBoleto(id, b));
@@ -1917,6 +2060,180 @@ async function compartilharBoleto(id, b) {
   }
 
   window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+}
+
+// ---------- comprovante de pagamento -----------------------------------------
+// Anexar não dá baixa na parcela: ela continua como está até a equipe conferir.
+const TIPOS_COMPROVANTE = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const LIMITE_COMPROVANTE = 8 * 1024 * 1024;
+
+function formularioComprovante(id, boleto, erro) {
+  abrirFolha(`
+    <h2>Enviar <em>comprovante</em></h2>
+    <div class="sub">Parcela ${boleto.parcela} · ${brl(boleto.valor)} · vence em ${dataCurta(boleto.vencimento)}</div>
+
+    <div class="campo">
+      <label for="arquivo">Comprovante</label>
+      <input id="arquivo" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" />
+      <div class="dica">Foto ou PDF do comprovante, até 8 MB.</div>
+    </div>
+    <div id="previa"></div>
+    <div class="campo">
+      <label for="obs">Observação</label>
+      <textarea id="obs" placeholder="Opcional — por exemplo: paguei no caixa eletrônico no dia 15"></textarea>
+    </div>
+    ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+    <div class="acoes dupla">
+      <button class="botao" id="enviar" disabled>Enviar</button>
+      <button class="botao secundario" id="voltar-boleto">Voltar</button>
+    </div>
+    <p class="rodape-nota">A parcela continua em aberto até a equipe conferir o pagamento. Assim que
+    a baixa sair, ela muda de situação sozinha.</p>
+  `, (el) => {
+    const campo = el.querySelector('#arquivo');
+    const botao = el.querySelector('#enviar');
+    const previa = el.querySelector('#previa');
+    let escolhido = null;
+
+    campo.addEventListener('change', () => {
+      const f = campo.files?.[0];
+      previa.innerHTML = '';
+      escolhido = null;
+      botao.disabled = true;
+      if (!f) return;
+      if (!TIPOS_COMPROVANTE.includes(f.type)) return avisar('Aceita foto (JPG, PNG, WebP) ou PDF');
+      if (f.size > LIMITE_COMPROVANTE) return avisar('Arquivo maior que 8 MB');
+
+      escolhido = f;
+      botao.disabled = false;
+      if (f.type.startsWith('image/')) {
+        const url = URL.createObjectURL(f);
+        previa.innerHTML = `<img class="previa-comprovante" src="${url}" alt="Prévia do comprovante" />`;
+        previa.querySelector('img').addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+      } else {
+        previa.innerHTML = `<div class="previa-pdf">${ICONES.anexo}<span>${escapar(f.name)}</span></div>`;
+      }
+    });
+
+    el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id));
+
+    botao.addEventListener('click', async () => {
+      if (!escolhido) return;
+      botao.disabled = true; botao.textContent = 'Enviando…';
+      try {
+        const conteudo = await new Promise((resolve, reject) => {
+          const leitor = new FileReader();
+          leitor.onload = () => resolve(leitor.result);
+          leitor.onerror = () => reject(leitor.error);
+          leitor.readAsDataURL(escolhido);
+        });
+        await chamar(`/financeiro/${id}/comprovante`, {
+          method: 'POST',
+          body: JSON.stringify({
+            arquivo: escolhido.name,
+            tipo: escolhido.type,
+            tamanho: escolhido.size,
+            observacao: el.querySelector('#obs').value.trim(),
+            conteudo,
+          }),
+        });
+        avisar('Comprovante enviado. A equipe confere e dá a baixa.');
+        abrirBoleto(id);
+      } catch (err) {
+        const mensagens = {
+          tipo_nao_aceito: 'Aceita foto (JPG, PNG, WebP) ou PDF.',
+          arquivo_grande: 'Arquivo maior que 8 MB.',
+        };
+        formularioComprovante(id, boleto, mensagens[err.message] || 'Não foi possível enviar agora.');
+      }
+    });
+  });
+}
+
+// ---------- meus dados -------------------------------------------------------
+// O formando confere o contato e pede correção. O valor só muda de verdade
+// depois que a equipe confere — é por aqui que a gente conserta boleto que não
+// chega porque o telefone ou o e-mail estão errados.
+const mascaraTelefone = (v) => {
+  const d = v.replace(/\D/g, '').replace(/^55/, '').slice(0, 11);
+  if (d.length <= 2) return d;
+  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+};
+
+async function telaMeusDados(erro) {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let p;
+  try { p = await chamar('/perfil'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir seus dados agora.</div>'); }
+
+  const pendente = p.pendente;
+  abrirFolha(`
+    <h2>Meus <em>dados</em></h2>
+    <div class="sub">Confira como a gente fala com você. O boleto e os avisos da turma vão para estes contatos.</div>
+
+    <div class="dado"><span>Nome</span><b>${escapar(semMarca(p.nome))}</b></div>
+    <div class="dado"><span>CPF</span><b>${escapar(p.cpf)}</b></div>
+    <div class="dado"><span>Turma</span><b>${escapar(p.turma)}</b></div>
+
+    ${pendente ? `
+      <div class="faixa info" style="margin-top:16px">
+        <div>
+          <b>Pedido de correção em análise.</b>
+          ${pendente.email ? `<br>Novo e-mail: ${escapar(pendente.email)}` : ''}
+          ${pendente.telefone ? `<br>Novo telefone: ${escapar(mascaraTelefone(pendente.telefone))}` : ''}
+          <br>Enviado em ${dataCurta(pendente.pedidoEm.slice(0, 10))} — até a equipe confirmar, valem os contatos atuais.
+        </div>
+      </div>` : ''}
+
+    <div class="secao-titulo">Contato</div>
+    <form id="form-contato" novalidate>
+      <div class="campo">
+        <label for="email">E-mail</label>
+        <input id="email" type="email" inputmode="email" autocomplete="email" value="${escapar(p.email || '')}" />
+      </div>
+      <div class="campo">
+        <label for="telefone">Celular com WhatsApp</label>
+        <input id="telefone" inputmode="tel" autocomplete="tel" value="${escapar(mascaraTelefone(p.telefone || ''))}" />
+        <div class="dica">É para onde vai o código de acesso e o aviso de boleto.</div>
+      </div>
+      ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+      <div class="acoes dupla">
+        <button class="botao" type="submit">Pedir correção</button>
+        <button class="botao secundario" type="button" data-fechar-folha>Fechar</button>
+      </div>
+    </form>
+    <p class="rodape-nota">A mudança é conferida pela equipe antes de valer — assim ninguém troca
+    o contato de outra pessoa por engano.</p>
+  `, (el) => {
+    const tel = el.querySelector('#telefone');
+    tel.addEventListener('input', () => { tel.value = mascaraTelefone(tel.value); });
+
+    el.querySelector('#form-contato').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const botao = el.querySelector('button[type=submit]');
+      botao.disabled = true; botao.textContent = 'Enviando…';
+      try {
+        await chamar('/perfil/contato', {
+          method: 'POST',
+          body: JSON.stringify({
+            email: el.querySelector('#email').value.trim(),
+            telefone: `55${tel.value.replace(/\D/g, '')}`,
+          }),
+        });
+        avisar('Pedido enviado. A equipe confirma e avisa você.');
+        telaMeusDados();
+      } catch (err) {
+        const mensagens = {
+          email_invalido: 'Esse e-mail não parece válido.',
+          telefone_invalido: 'Digite o celular com DDD.',
+          nada_mudou: 'Os dados estão iguais aos que já temos.',
+        };
+        telaMeusDados(mensagens[err.message] || 'Não foi possível enviar agora.');
+      }
+    });
+  });
 }
 
 // ---------- aba: cronograma --------------------------------------------------
