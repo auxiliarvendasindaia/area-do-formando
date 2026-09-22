@@ -411,40 +411,10 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
 .entrar .rodape-nota { text-align: center; }
 
 /* ==========================================================================
-   Início: faixa de fotos do espaço, frase de impacto e símbolo do curso
+   Início: frase de impacto e símbolo do curso
    ========================================================================== */
 
 .topo-interno { display: flex; align-items: center; gap: 14px; width: 100%; max-width: var(--coluna); margin: 0 auto; }
-
-/* faixa de fotos que roda */
-.faixa-fotos {
-  position: relative; border-radius: var(--raio); overflow: hidden;
-  background: var(--night); aspect-ratio: 16 / 9; margin-bottom: 12px; box-shadow: var(--sombra);
-}
-@media (max-width: 640px) { .faixa-fotos { aspect-ratio: 3 / 2; } }
-.faixa-fotos figure { position: absolute; inset: 0; margin: 0; opacity: 0; transition: opacity .9s var(--ease, ease); }
-.faixa-fotos figure.ativa { opacity: 1; }
-.faixa-fotos img { width: 100%; height: 100%; object-fit: cover; object-position: center; display: block; }
-.faixa-fotos .veu {
-  position: absolute; inset: 0;
-  background: linear-gradient(180deg, rgba(12, 7, 21, .1) 0%, rgba(12, 7, 21, .18) 45%, rgba(12, 7, 21, .82) 100%);
-}
-.faixa-fotos .legenda {
-  position: absolute; left: 0; right: 0; bottom: 0; padding: 22px 24px;
-  color: var(--cream); display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
-}
-.faixa-fotos .legenda .kicker { color: rgba(242, 233, 218, .82); }
-.faixa-fotos .legenda strong { display: block; font-family: var(--serif); font-size: 24px; font-weight: 600; margin-top: 4px; }
-.faixa-fotos .bolinhas { display: flex; gap: 7px; flex: none; padding-bottom: 5px; }
-/* a bolinha tem 7px de desenho, mas 44px de área de toque: o padding não é
-   pintado por causa do background-clip. */
-.faixa-fotos .bolinhas button {
-  box-sizing: content-box; /* o padding é área de toque, não encolhe a bolinha */
-  width: 7px; height: 7px; padding: 18px 0; border-radius: 99px; border: 0; cursor: pointer;
-  background: rgba(242, 233, 218, .5); background-clip: content-box;
-  transition: width .25s, background .25s;
-}
-.faixa-fotos .bolinhas button.ativa { width: 22px; background: var(--cream); background-clip: content-box; }
 
 /* frase de impacto + símbolo do curso */
 .frase {
@@ -566,12 +536,6 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
 .grupo-ano[open] summary { border-radius: var(--raio) var(--raio) 0 0; border-bottom-color: transparent; box-shadow: none; }
 .grupo-ano[open] .lista { border-top-left-radius: 0; border-top-right-radius: 0; border-top: 0; }
 
-@media (max-width: 640px) {
-  .faixa-fotos .legenda { padding: 16px 16px 14px; }
-  .faixa-fotos .legenda .kicker { font-size: .56rem; letter-spacing: .22em; }
-  .faixa-fotos .legenda strong { font-size: 19px; }
-  .faixa-fotos .veu { background: linear-gradient(180deg, rgba(12, 7, 21, .12) 0%, rgba(12, 7, 21, .3) 40%, rgba(12, 7, 21, .88) 100%); }
-}
 
 /* nome do formando, ao lado do título da página */
 .topo-nome { margin-left: auto; text-align: right; line-height: 1.1; }
@@ -922,11 +886,6 @@ main { max-width: none; margin: 0; }
 .faq-item p { margin: 0; padding: 0 16px 14px; font-size: 13.5px; color: var(--texto-suave); line-height: 1.6; }
 
 /* foto do espaço em tela cheia */
-.lightbox { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: rgba(8, 4, 14, .88); padding: 20px; }
-.lightbox[hidden] { display: none; }
-.lightbox img { max-width: min(1200px, 96vw); max-height: 84vh; border-radius: var(--raio); display: block; }
-.lightbox .legenda-cheia { color: var(--cream); text-align: center; margin-top: 14px; font-family: var(--serif); font-size: 20px; }
-.lightbox .fechar { position: absolute; top: 18px; right: 18px; width: 44px; height: 44px; border-radius: 50%; border: 1px solid rgba(242, 233, 218, .35); background: rgba(12, 7, 21, .5); color: var(--cream); font-size: 20px; cursor: pointer; }
 
 /* ==========================================================================
    Topo no celular: o nome do formando não some mais
@@ -1310,15 +1269,7 @@ main { max-width: none; margin: 0; }
       }
     }
 
-    for (const a of (turma.avisos || []).slice(0, 3)) {
-      itens.push({
-        id: `aviso-${a.id}`, tipo: 'aviso', prioridade: 3,
-        titulo: a.titulo,
-        texto: a.texto.length > 120 ? `${a.texto.slice(0, 117)}…` : a.texto,
-        quando: a.publicadoEm, ir: 'turma',
-      });
-    }
-
+    // O mural da turma não entra aqui: o sino é do que depende do formando.
     const proxima = turma.cronograma.filter((e) => e.data >= HOJE).sort((a, b) => a.data.localeCompare(b.data))[0];
     if (proxima && emDias(proxima.data) <= 45) {
       itens.push({
@@ -2319,60 +2270,6 @@ function itemBoleto(b) {
 
 const ligarBoletos = () => app.querySelectorAll('[data-boleto]').forEach((b) => b.addEventListener('click', () => abrirBoleto(b.dataset.boleto)));
 
-// Faixa de fotos do espaço, no topo do Início. Troca sozinha a cada 5 s e para
-// enquanto o ponteiro está em cima.
-function faixaFotos(fotos, espaco) {
-  if (!fotos?.length) return '';
-  return `
-    <div class="faixa-fotos" id="faixa">
-      ${fotos.map((f, i) => `
-        <figure class="${i === 0 ? 'ativa' : ''}" data-foto="${i}">
-          <img src="fotos/${escapar(f.arquivo)}" alt="${escapar(f.legenda)}" loading="${i === 0 ? 'eager' : 'lazy'}" />
-        </figure>`).join('')}
-      <div class="veu"></div>
-      <div class="legenda">
-        <div>
-          <div class="kicker">${escapar(espaco || 'O seu espaço')}</div>
-          <strong id="faixa-legenda">${escapar(fotos[0].legenda)}</strong>
-        </div>
-        <div class="bolinhas">
-          ${fotos.map((_, i) => `<button data-ir-foto="${i}" class="${i === 0 ? 'ativa' : ''}" aria-label="Foto ${i + 1}"></button>`).join('')}
-        </div>
-      </div>
-    </div>`;
-}
-
-function ligarFaixa(fotos) {
-  const faixa = app.querySelector('#faixa');
-  if (!faixa || !fotos?.length) return;
-  const legenda = app.querySelector('#faixa-legenda');
-  let atual = 0;
-
-  const mostrar = (i) => {
-    atual = (i + fotos.length) % fotos.length;
-    faixa.querySelectorAll('[data-foto]').forEach((f, j) => f.classList.toggle('ativa', j === atual));
-    faixa.querySelectorAll('[data-ir-foto]').forEach((b, j) => b.classList.toggle('ativa', j === atual));
-    legenda.textContent = fotos[atual].legenda;
-  };
-
-  faixa.querySelectorAll('[data-ir-foto]').forEach((b) => b.addEventListener('click', () => {
-    mostrar(Number(b.dataset.irFoto));
-    reiniciar();
-  }));
-
-  // clicar na foto abre ela inteira, sem o véu e sem o corte da faixa
-  faixa.addEventListener('click', (e) => {
-    if (e.target.closest('[data-ir-foto]')) return;
-    abrirFoto(fotos[atual].arquivo, fotos[atual].legenda);
-  });
-  faixa.style.cursor = 'zoom-in';
-
-  let timer = null;
-  const reiniciar = () => { clearInterval(timer); timer = setInterval(() => mostrar(atual + 1), 5000); };
-  faixa.addEventListener('mouseenter', () => clearInterval(timer));
-  faixa.addEventListener('mouseleave', reiniciar);
-  reiniciar();
-}
 
 // Primeira coisa da tela inicial: o que precisa de você agora. Sai da mesma
 // lista do sino, que já vem ordenada por urgência — aqui ficam os três
@@ -2430,16 +2327,10 @@ function abaInicio() {
   const { resumo } = estado.financeiro;
   const proxima = proximaParaPagar();
   const dias = diasAte(t.dataEvento);
-  const atrasadas = estado.financeiro.boletos.filter((b) => b.status === 'em_atraso');
-  const aviso = t.avisos?.[0];
-  const proximaEtapa = t.cronograma.find((e) => e.data >= hoje());
-
   const curso = cursoDe(estado.eu?.curso);
 
   moldura(`
     ${painelAtencao()}
-
-    ${faixaFotos(t.fotos, t.espaco)}
 
     <div class="frase">
       <div class="simbolo">
@@ -2468,35 +2359,16 @@ function abaInicio() {
         <div class="kicker">Seu contrato</div>
         <div class="dado"><span>Total</span><b>${brl(resumo.contratado)}</b></div>
         <div class="dado"><span>Pago</span><b>${brl(resumo.pago)}</b></div>
-        <div class="dado"><span>Em aberto</span><b>${brl(resumo.emAberto + resumo.emAtraso)}</b></div>
+        <div class="dado"><span>Em aberto</span><b>${brl(resumo.emAberto + resumo.emAtraso + resumo.aEmitir)}</b></div>
         <div class="barra"><i style="width:${(resumo.contratado ? Math.min(100, (resumo.pago / resumo.contratado) * 100) : 0).toFixed(1)}%"></i></div>
         <button class="botao secundario" data-ir="financeiro">Ver financeiro</button>
       </div>
     </div>
 
-    ${proximaEtapa ? `
-      <div class="secao-titulo">Próximo passo da turma</div>
-      <div class="cartao">
-        <div class="kicker">${dataLonga(proximaEtapa.data)}</div>
-        <h3 class="serif" style="margin:4px 0 2px;font-size:22px">${escapar(proximaEtapa.etapa)}</h3>
-        <p style="margin:0;color:var(--texto-suave);font-size:13.5px">${escapar(proximaEtapa.local || '')}${proximaEtapa.observacao ? ` — ${escapar(proximaEtapa.observacao)}` : ''}</p>
-      </div>` : ''}
-
-    ${aviso ? `
-      <div class="secao-titulo">Aviso da equipe</div>
-      <div class="cartao">
-        <div class="aviso-turma">
-          <div class="data">${dataCurta(aviso.publicadoEm)}</div>
-          <h3>${escapar(aviso.titulo)}</h3>
-          <p>${escapar(aviso.texto)}</p>
-        </div>
-      </div>` : ''}
-
     ${notaRodape()}
   `, estado.eu?.turma ? `Turma ${estado.eu.turma.codigo} · ${escapar(t.curso)}` : '');
 
   ligarBoletos();
-  ligarFaixa(t.fotos);
   ligarPainelAtencao();
   app.querySelectorAll('[data-ir]').forEach((b) => b.addEventListener('click', () => irPara(b.dataset.ir)));
 }
@@ -3842,12 +3714,11 @@ function abaTurma() {
 }
 
 // ---------- central de avisos (o sino) ---------------------------------------
-// Junta num lugar só o que antes só aparecia entrando em cada aba: parcela
-// vencida ou perto de vencer, resposta de pedido, aviso da equipe e etapa
-// chegando. É o que responde ao "ninguém me avisou".
+// Só o que depende do formando: parcela vencida ou perto de vencer, resposta de
+// um pedido dele e etapa chegando. O mural da turma fica em Minha turma.
 const ICONE_AVISO = {
   atraso: ICONES.financeiro, vencimento: ICONES.relogio,
-  pedido: ICONES.pedidos, aviso: ICONES.zap, etapa: ICONES.calendario,
+  pedido: ICONES.pedidos, etapa: ICONES.calendario,
 };
 
 async function telaAvisos() {
@@ -4028,28 +3899,6 @@ async function abrirRecibo(id) {
     `);
   } catch { avisar('Não foi possível abrir o recibo agora'); }
 }
-
-// ---------- foto do espaço em tela cheia -------------------------------------
-function abrirFoto(arquivo, legenda) {
-  let caixa = document.getElementById('lightbox');
-  if (!caixa) {
-    caixa = document.createElement('div');
-    caixa.id = 'lightbox';
-    caixa.className = 'lightbox';
-    document.body.appendChild(caixa);
-    caixa.addEventListener('click', () => { caixa.hidden = true; });
-  }
-  caixa.innerHTML = `
-    <button class="fechar" aria-label="Fechar">×</button>
-    <div>
-      <img src="fotos/${escapar(arquivo)}" alt="${escapar(legenda)}" />
-      <div class="legenda-cheia">${escapar(legenda)}</div>
-    </div>`;
-  caixa.hidden = false;
-}
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') { const c = document.getElementById('lightbox'); if (c) c.hidden = true; }
-});
 
 function abrirWhatsapp() {
   const numero = estado.config?.whatsappAtendimento;
