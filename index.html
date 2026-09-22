@@ -7,6 +7,13 @@
 <meta name="robots" content="noindex" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23160C24'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='17' fill='%23E4C878' text-anchor='middle'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E" />
 <title>Área do Formando — Indaiá Formaturas</title>
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="apple-touch-icon" href="./icone-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Meu Formando" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="apple-touch-icon" href="./icone-192.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400;1,600&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -852,7 +859,7 @@ main { max-width: none; margin: 0; }
 .hero-financeiro .proxima.atrasada .valor { color: #F2B8B2; }
 
 /* valor pleno ao lado do valor com pontualidade, como manda a cláusula 4.4 */
-.item .quanto .pleno { display: block; font-size: 12px; color: var(--texto-suave); text-decoration: line-through; }
+.item .quanto .pleno { display: block; font-size: 12.5px; color: var(--texto-suave); text-decoration: line-through; }
 
 /* ==========================================================================
    Histórico da parcela, comissão da turma, convites e perguntas frequentes
@@ -969,6 +976,57 @@ button.comprovante[disabled] { cursor: default; }
 .visao button:hover { color: var(--texto); }
 .visao button.ativo { background: var(--violet); color: #fff; }
 .grupo-ano summary .ano.mes { font-size: 19px; }
+
+/* parcela vencida com comprovante anexado: em análise, não em atraso */
+.s-em_analise { background: rgba(201, 162, 75, .2); color: var(--dourado-txt); }
+
+/* ==========================================================================
+   Instalar na tela de início e conforto no celular (Android e iOS)
+   ========================================================================== */
+.passos { margin: 0 0 14px; padding-left: 22px; font-size: 14px; line-height: 1.7; }
+.passos li { margin-bottom: 6px; }
+.passos b { font-weight: 600; }
+
+/* iOS zooma sozinho quando o campo tem menos de 16px */
+.campo input, .campo select, .campo textarea, .folha-corpo textarea { font-size: 16px; }
+
+/* barra do navegador no celular: 100vh mente, dvh não */
+@supports (height: 100dvh) {
+  .entrar, .carregando, .app, .conteudo, .faixa-central { min-height: 100dvh; }
+  .folha-corpo { max-height: 88dvh; }
+}
+
+/* seletor de visão: alvo de toque de 44px e texto legível */
+.visao button { min-height: 44px; font-size: .72rem; padding: 6px 14px; }
+
+@media (max-width: 640px) {
+  /* filtros e visão numa faixa que rola de lado, em vez de três linhas */
+  .filtros { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; scroll-snap-type: x proximity; }
+  .filtros::-webkit-scrollbar { display: none; }
+  .filtros button { flex: none; scroll-snap-align: start; }
+  .titulo-linha { margin-bottom: 8px; }
+  .visao { margin-left: auto; }
+  /* o topo do financeiro ocupa menos tela antes da primeira parcela */
+  .hero-financeiro { padding: 18px 18px 20px; }
+  .hero-financeiro .total { font-size: 34px; margin-bottom: 14px; }
+  .hero-financeiro .proxima { margin-top: 14px; padding-top: 14px; }
+  .hero-financeiro .proxima .botao { width: 100%; min-width: 0; }
+  .acoes-financeiro { gap: 8px; }
+  main { padding-top: 14px; }
+}
+
+/* toque sem o flash cinza do Android */
+button, .item, summary { -webkit-tap-highlight-color: rgba(123, 78, 194, .15); }
+
+/* celular: menos altura antes da lista de parcelas */
+@media (max-width: 640px) {
+  .acoes-financeiro { grid-template-columns: 1fr 1fr; }
+  .acao-financeira { min-height: 56px; }
+  .acao-financeira strong { font-size: 13.5px; }
+  /* título e seletor de visão na mesma linha */
+  .titulo-linha { flex-wrap: nowrap; margin-top: 22px; }
+  .titulo-linha .secao-titulo { white-space: nowrap; }
+}
 
 </style>
 </head>
@@ -1089,13 +1147,18 @@ button.comprovante[disabled] { cursor: default; }
   }
 
   // O que se deve HOJE: vencida vale o pleno com os encargos da 4.3 até hoje.
-  async function projetarComValor(b) {
+  const comprovantePendente = (adesaoId, billId) =>
+    comprovantes.some((c) => c.adesaoId === adesaoId && c.billId === billId && c.status === 'em_analise');
+
+  // vencida com comprovante anexado aparece como "em análise", não como atraso
+  async function projetarComValor(b, adesaoId) {
     const p = projetarBoleto(b);
     if (p.status === 'pago') p.valorDevido = b.valorPago || b.valor;
     else if (p.status === 'em_atraso' && !b.unico) {
       p.encargosHoje = await calcularEncargos(b, new Date(`${HOJE}T12:00:00`));
       p.valorDevido = p.encargosHoje.total;
     } else p.valorDevido = b.valorAtualizado || b.valor;
+    if (p.status === 'em_atraso' && adesaoId && comprovantePendente(adesaoId, b.id)) p.status = 'em_analise';
     return p;
   }
 
@@ -1103,7 +1166,7 @@ button.comprovante[disabled] { cursor: default; }
     const projetados = todos.filter((b) => !b.unico);
     const soma = (f) => arredonda(projetados.filter(f).reduce((a, b) => a + b.valorDevido, 0));
     const proxima = projetados
-      .filter((b) => ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status))
+      .filter((b) => ['em_aberto', 'em_atraso', 'em_analise', 'agendado', 'nao_gerado'].includes(b.status))
       .filter((b) => b.vencimento >= HOJE)
       .sort((a, b) => a.vencimento.localeCompare(b.vencimento))[0];
     return {
@@ -1113,6 +1176,7 @@ button.comprovante[disabled] { cursor: default; }
       pago: soma((b) => b.status === 'pago'),
       emAberto: soma((b) => b.status === 'em_aberto'),
       emAtraso: soma((b) => b.status === 'em_atraso'),
+      emAnalise: soma((b) => b.status === 'em_analise'),
       aEmitir: soma((b) => b.status === 'agendado' || b.status === 'nao_gerado'),
       parcelasPagas: projetados.filter((b) => b.status === 'pago' && !b.unico).length,
       proximoVencimento: proxima ? { vencimento: proxima.vencimento, valor: proxima.valorDevido, status: proxima.status } : null,
@@ -1287,7 +1351,7 @@ button.comprovante[disabled] { cursor: default; }
   }
   async function extratoDoFormando(adesao) {
     // o boleto único é outra forma de pagar as mesmas parcelas: não entra na conta
-    const bs = await Promise.all(adesao.boletos.filter((b) => !b.unico).map(async (b) => ({ ...b, ...(await projetarComValor(b)) })));
+    const bs = await Promise.all(adesao.boletos.filter((b) => !b.unico).map(async (b) => ({ ...b, ...(await projetarComValor(b, adesao.adesaoId)) })));
     const pagas = bs.filter((b) => b.status === 'pago')
       .sort((a, b) => (a.pagoEm || a.vencimento).localeCompare(b.pagoEm || b.vencimento));
     const totalPago = arredonda(pagas.reduce((a, b) => a + (b.valorPago || b.valor), 0));
@@ -1540,7 +1604,7 @@ button.comprovante[disabled] { cursor: default; }
       const n = Number(corpo.dias);
       if (![1, 3, 5, 7].includes(n)) throw erro(400, { erro: 'prazo_invalido' });
       lembretes.set(a.adesaoId, n);
-      const s = novaSolicitacao(a, 'lembrete', { mensagem: `Avisar ${n} dia(s) antes de cada vencimento.`, quantidade: n });
+      const s = novaSolicitacao(a, 'lembrete', { mensagem: `Avisar por e-mail ${n} dia(s) antes de cada vencimento.`, quantidade: n });
       return { lembreteDias: n, protocolo: s.protocolo };
     },
 
@@ -1582,7 +1646,7 @@ button.comprovante[disabled] { cursor: default; }
     'GET /financeiro': (t) => {
       const a = daSessao(t);
       if (a.situacao === 'cancelada') throw erro(409, { erro: 'adesao_cancelada', canceladaEm: a.canceladaEm });
-      return Promise.all(a.boletos.map(projetarComValor)).then((boletos) => {
+      return Promise.all(a.boletos.map((b) => projetarComValor(b, a.adesaoId))).then((boletos) => {
         for (const p of boletos) p.qtdComprovantes = comprovantes.filter((c) => c.adesaoId === a.adesaoId && c.billId === p.id).length;
         return { resumo: resumoFinanceiro(a, boletos), boletos };
       });
@@ -1697,7 +1761,7 @@ button.comprovante[disabled] { cursor: default; }
       const status = situacaoBoleto(b);
       const escondido = status === 'agendado' || status === 'nao_gerado';
       return {
-        ...(await projetarComValor(b)),
+        ...(await projetarComValor(b, a.adesaoId)),
         linhaDigitavel: escondido ? null : b.linhaDigitavel,
         pdfUrl: escondido ? null : b.pdfUrl,
         urlPagamento: escondido ? null : b.urlPagamento,
@@ -1791,7 +1855,7 @@ button.comprovante[disabled] { cursor: default; }
         registrarHistorico(b.id, 'Incluída num boleto único', `Vence em ${u.vencimento.split('-').reverse().join('/')} · a parcela continua com o boleto dela`);
       }
       registrarHistorico(u.id, 'Boleto único gerado', `${u.unico.parcelas.length} parcela(s) · total ${u.valor}`);
-      return { ...(await projetarComValor(u)), linhaDigitavel: u.linhaDigitavel };
+      return { ...(await projetarComValor(u, a.adesaoId)), linhaDigitavel: u.linhaDigitavel };
     }
 
     // o arquivo do comprovante, para abrir na tela
@@ -1933,7 +1997,7 @@ const diasAte = (iso) => Math.round((new Date(`${iso}T12:00:00`) - new Date(`${h
 const ROTULO_STATUS = {
   pago: 'Pago', em_aberto: 'Em aberto', em_atraso: 'Em atraso',
   agendado: 'Programada', nao_gerado: 'Programada',
-  expirado: 'Expirado',
+  em_analise: 'Em análise', expirado: 'Expirado',
 };
 
 // Decisões da equipe (22/09/2026): a 2ª via vence em 5 dias; com mais de duas
@@ -1942,6 +2006,15 @@ const DIAS_SEGUNDA_VIA = 5;
 const MAX_VENCIDAS_SEM_EQUIPE = 2;
 
 const nomeCobranca = (b) => b.nome || (b.unico ? 'Boleto único' : `Parcela ${b.parcela}`);
+// O que aparece como "Referente a": o código do CRM (E08058 - PARC FORMATURA) não
+// diz nada para o formando e fica só no PDF do boleto.
+function descricaoAmigavel(b) {
+  const turma = estado.eu?.turma?.codigo ? ` · turma ${estado.eu.turma.codigo}` : '';
+  if (b.unico) return `Boleto único · ${rotuloParcelas(b.unico.parcelas)}${turma}`;
+  const total = estado.financeiro?.resumo?.parcelas;
+  return `Parcela ${b.parcela}${total ? ` de ${total}` : ''} da formatura${turma}`;
+}
+
 const rotuloParcelas = (ps) => (ps.length === 1 ? `parcela ${ps[0].parcela}` : `parcelas ${ps[0].parcela} a ${ps[ps.length - 1].parcela}`);
 const maiuscula = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 // a linha de apoio de uma cobrança: "Parcela 6" ou, no boleto único, "Parcelas 6 a 8"
@@ -2181,6 +2254,7 @@ const ICONES = {
   check: '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></svg>',
   duvida: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.3 2.4c-.6.2-.9.8-.9 1.4v.5"/><path d="M12 17h.01"/></svg>',
   relogio: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5l3 1.8"/></svg>',
+  celular: '<svg viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>',
 };
 
 // ---------- tema claro/escuro ------------------------------------------------
@@ -2366,6 +2440,7 @@ function moldura(conteudo, sub) {
         <button id="meus-pedidos">${ICONES.pedidos}<span>Meus pedidos</span></button>
         <button id="meus-dados">${ICONES.pessoa}<span>Meus dados</span></button>
         <button id="duvidas">${ICONES.duvida}<span>Dúvidas frequentes</span></button>
+        ${instalado() ? '' : `<button id="instalar">${ICONES.celular}<span>Instalar no celular</span></button>`}
         <button id="tema">${ICONES.tema}<span>${temaAtual() === 'escuro' ? 'Tema claro' : 'Tema escuro'}</span></button>
         <button id="zap">${ICONES.zap}<span>Falar com a gente</span></button>
         <button id="sair">${ICONES.sair}<span>Sair</span></button>
@@ -2400,6 +2475,7 @@ function moldura(conteudo, sub) {
   app.querySelector('#meus-pedidos').addEventListener('click', telaMeusPedidos);
   app.querySelector('#meus-dados').addEventListener('click', telaMeusDados);
   app.querySelector('#duvidas').addEventListener('click', telaPerguntas);
+  app.querySelector('#instalar')?.addEventListener('click', telaInstalar);
   app.querySelector('#tema').addEventListener('click', alternarTema);
   app.querySelector('#zap').addEventListener('click', abrirWhatsapp);
   app.querySelector('#sair').addEventListener('click', sair);
@@ -2420,7 +2496,7 @@ function notaRodape() {
 // — quem conta é o boleto único.
 function proximaParaPagar() {
   const bs = estado.financeiro?.boletos || [];
-  const ordem = { em_atraso: 0, em_aberto: 1, agendado: 2, nao_gerado: 2 };
+  const ordem = { em_atraso: 0, em_analise: 1, em_aberto: 2, agendado: 3, nao_gerado: 3 };
   return bs.filter((b) => !b.unico && b.status in ordem)
     .sort((a, b) => (ordem[a.status] - ordem[b.status]) || a.vencimento.localeCompare(b.vencimento))[0];
 }
@@ -2446,6 +2522,7 @@ function itemBoleto(b) {
   const mostrarPleno = ['em_aberto', 'agendado', 'nao_gerado'].includes(b.status) && !b.valorAtualizado && b.valorPleno > b.valor;
   const faixa = b.unico ? `${maiuscula(rotuloParcelas(b.unico.parcelas))} · ` : '';
   const quando = b.status === 'pago' ? `${faixa}${b.unico ? 'pago' : 'Pago'} em ${dataCurta(b.pagoEm)}`
+    : b.status === 'em_analise' ? `Venceu em ${dataCurta(b.vencimento)} · comprovante em análise`
     : atraso ? `${faixa}${b.unico ? 'venceu' : 'Venceu'} em ${dataCurta(b.vencimento)}`
     : `${faixa}${b.unico ? 'vence' : 'Vence'} em ${dataCurta(b.vencimento)}`;
   return `
@@ -2557,7 +2634,7 @@ function abaInicio() {
         <div class="kicker">Seu contrato</div>
         <div class="dado"><span>Total</span><b>${brl(resumo.contratado)}</b></div>
         <div class="dado"><span>Pago</span><b>${brl(resumo.pago)}</b></div>
-        <div class="dado"><span>Em aberto</span><b>${brl(resumo.emAberto + resumo.emAtraso + resumo.aEmitir)}</b></div>
+        <div class="dado"><span>Em aberto</span><b>${brl(resumo.emAberto + resumo.emAtraso + (resumo.emAnalise || 0) + resumo.aEmitir)}</b></div>
         <div class="barra"><i style="width:${(resumo.contratado ? Math.min(100, (resumo.pago / resumo.contratado) * 100) : 0).toFixed(1)}%"></i></div>
         <button class="botao secundario" data-ir="financeiro">Ver financeiro</button>
       </div>
@@ -2576,7 +2653,7 @@ function abaInicio() {
 // Pendentes · Pagas), com os nomes que valem para formatura.
 const FILTROS = [
   { id: 'todas', rotulo: 'Todas', teste: () => true },
-  { id: 'vencidas', rotulo: 'Vencidas', teste: (b) => b.status === 'em_atraso' },
+  { id: 'vencidas', rotulo: 'Vencidas', teste: (b) => b.status === 'em_atraso' || b.status === 'em_analise' },
   { id: 'aguardando', rotulo: 'Aguardando', teste: (b) => b.status === 'em_aberto' },
   { id: 'programadas', rotulo: 'Programadas', teste: (b) => b.status === 'agendado' || b.status === 'nao_gerado' },
   { id: 'pagas', rotulo: 'Pagas', teste: (b) => b.status === 'pago' },
@@ -2594,8 +2671,9 @@ function abaFinanceiro() {
   const proxima = proximaParaPagar();
   const podeAntecipar = parcelas.some((b) => !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status));
 
-  const emAberto = resumo.emAberto + resumo.emAtraso + resumo.aEmitir;
+  const emAberto = resumo.emAberto + resumo.emAtraso + (resumo.emAnalise || 0) + resumo.aEmitir;
   const atrasadas = boletos.filter((b) => b.status === 'em_atraso');
+  const emAnalise = boletos.filter((b) => b.status === 'em_analise');
   const negociar = atrasadas.length > MAX_VENCIDAS_SEM_EQUIPE;
   const diasMaisAntiga = atrasadas.length
     ? Math.max(...atrasadas.map((b) => Math.abs(diasAte(b.vencimento))))
@@ -2621,7 +2699,7 @@ function abaFinanceiro() {
       </div>
       <div class="trilho"><i style="width:${pct.toFixed(1)}%"></i></div>
       <div class="pct">${pct.toFixed(0)}% pago</div>
-      ${atrasadas.length ? `
+      ${atrasadas.length > 1 ? `
         <div class="atraso">
           <span>${atrasadas.length} parcela${atrasadas.length > 1 ? 's' : ''} em atraso</span>
           <b>${brl(resumo.emAtraso)}</b>
@@ -2644,11 +2722,19 @@ function abaFinanceiro() {
           Enquanto houver parcela em aberto, a participação nos eventos, ensaios e a retirada de
           convites ficam suspensas ${clausula("8.1")}.
           ${diasMaisAntiga >= 60 ? ` Acima de ${diasInadimplenciaRescisao} dias o contrato pode ser rescindido ${clausula("17.1", "")}.` : ''}
+          <b>Já pagou?</b> Anexe o comprovante na parcela que a equipe confere.
         </div>
       </div>
       <div class="acoes ${negociar ? 'dupla' : ''}" style="margin-bottom:12px">
         ${negociar ? '<button class="botao secundario" id="negociar">Quero falar com a equipe e negociar</button>' : ''}
         <button class="botao secundario" data-boleto="${escapar(atrasadas[0].id)}">${atrasadas.length === 1 ? 'Ver a parcela vencida' : 'Ver a vencida mais antiga'}</button>
+      </div>` : ''}
+
+    ${emAnalise.length ? `
+      <div class="faixa ouro">
+        <div>${emAnalise.length === 1 ? 'Uma parcela vencida está' : `${emAnalise.length} parcelas vencidas estão`}
+        <b>em análise</b>: você anexou o comprovante e a equipe está conferindo. Assim que a baixa sair, a
+        situação muda sozinha.</div>
       </div>` : ''}
 
     <div class="acoes-financeiro">
@@ -2970,7 +3056,16 @@ async function abrirBoleto(id, { individual = false } = {}) {
 
   // o que dá para fazer com ela
   let acoes = '';
-  if (atraso && !b.unico) {
+  if (b.status === 'em_analise') {
+    const c = (b.comprovantes || []).find((x) => x.status === 'em_analise');
+    acoes = `
+      <div class="faixa ouro" style="margin-top:16px">
+        <div><b>Comprovante em análise.</b> Você anexou ${c ? escapar(c.arquivo) : 'o comprovante'} em
+        ${c ? dataCurta(c.enviadoEm.slice(0, 10)) : 'dias atrás'} e a equipe está conferindo. Quando a baixa sair,
+        a parcela muda sozinha. Se o pagamento não for confirmado, você ainda pode gerar a 2ª via.</div>
+      </div>
+      <div class="acoes"><button class="botao secundario" id="segunda-via">Gerar 2ª via mesmo assim</button></div>`;
+  } else if (atraso && !b.unico) {
     acoes = `
       <div class="faixa alerta" style="margin-top:14px">
         <div><b>O boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova — ela
@@ -2985,10 +3080,7 @@ async function abrirBoleto(id, { individual = false } = {}) {
         <button class="botao" id="copiar">Copiar linha</button>
         <button class="botao secundario" id="pdf">Abrir PDF</button>
       </div>
-      <div class="acoes dupla">
-        <button class="botao secundario" id="compartilhar">Compartilhar</button>
-        <button class="botao secundario" id="pagar">Pagar no banco</button>
-      </div>`;
+      <div class="acoes"><button class="botao secundario" id="compartilhar">Compartilhar</button></div>`;
   } else if (semBoleto) {
     // Decisão da equipe: só se paga o que já tem boleto gerado. Para adiantar,
     // o caminho é o boleto único.
@@ -3013,7 +3105,7 @@ async function abrirBoleto(id, { individual = false } = {}) {
     <div class="sub">${escapar(ROTULO_STATUS[b.status])} · ${atraso ? 'venceu' : b.status === 'pago' ? 'venceu' : 'vence'} em ${dataLonga(b.vencimento)}${b.pagoEm ? ` · pago em ${dataCurta(b.pagoEm)}` : ''}</div>
 
     ${valores}
-    <div class="dado"><span>Descrição</span><b>${escapar(b.descricao)}</b></div>
+    <div class="dado"><span>Referente a</span><b>${escapar(descricaoAmigavel(b))}</b></div>
 
     ${segurarIndividual ? `
       <div class="faixa ouro" style="margin-top:16px"><div><b>Esta parcela já está num boleto único</b> que vence em
@@ -3073,7 +3165,6 @@ async function abrirBoleto(id, { individual = false } = {}) {
     el.querySelector('#copiar')?.addEventListener('click', () => copiar(b.linhaDigitavel));
     el.querySelector('#pdf')?.addEventListener('click', () => abrirPdf(id, b));
     el.querySelector('#compartilhar')?.addEventListener('click', () => compartilharBoleto(id, b));
-    el.querySelector('#pagar')?.addEventListener('click', () => avisar('No ambiente real, abre o link de pagamento da Vindi'));
     el.querySelector('#ir-antecipar')?.addEventListener('click', simulacaoAntecipacao);
     el.querySelector('#ver-unico')?.addEventListener('click', () => abrirBoleto(b.unicoAtivo.id));
     el.querySelector('#so-esta')?.addEventListener('click', () => abrirBoleto(id, { individual: true }));
@@ -3724,7 +3815,7 @@ async function telaMeusDados(erro) {
       <div class="campo">
         <label for="telefone">Celular com WhatsApp</label>
         <input id="telefone" inputmode="tel" autocomplete="tel" value="${escapar(mascaraTelefone(p.telefone || ''))}" />
-        <div class="dica">É para onde vai o código de acesso e o aviso de boleto.</div>
+        <div class="dica">É para onde vai o código de acesso; o aviso de vencimento vai por e-mail.</div>
       </div>
       ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
       <div class="acoes dupla">
@@ -3735,8 +3826,8 @@ async function telaMeusDados(erro) {
     <div class="secao-titulo">Lembrete de vencimento</div>
     <p class="rodape-nota" style="margin:0 0 12px">
       ${p.lembreteDias
-        ? `Hoje você recebe o aviso <b>${p.lembreteDias} dia${p.lembreteDias > 1 ? 's' : ''} antes</b> de cada vencimento, por WhatsApp e e-mail.`
-        : 'Quer um aviso antes de cada parcela vencer? Escolha quando, e ele vai por WhatsApp e e-mail.'}
+        ? `Hoje você recebe o aviso <b>${p.lembreteDias} dia${p.lembreteDias > 1 ? 's' : ''} antes</b> de cada vencimento, por e-mail.`
+        : 'Quer um aviso antes de cada parcela vencer? Escolha quando, e ele chega por e-mail.'}
     </p>
     <div class="filtros" id="lembretes">
       ${[1, 3, 5, 7].map((d) => `<button data-lembrete="${d}" class="${p.lembreteDias === d ? 'ativo' : ''}">${d} dia${d > 1 ? 's' : ''} antes</button>`).join('')}
@@ -4345,6 +4436,72 @@ async function abrirRecibo(id) {
   } catch { avisar('Não foi possível abrir o recibo agora'); }
 }
 
+// ---------- instalar na tela de início (PWA) ---------------------------------
+// O site pode virar aplicativo sem loja: o navegador instala o atalho, abre em
+// tela cheia e — quando o envio estiver ligado no servidor — recebe notificação.
+// No Android o próprio navegador oferece instalar; no iPhone é pelo menu de
+// compartilhar, e só assim o iOS aceita notificação.
+const instalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const ehIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const ehAndroid = () => /android/i.test(navigator.userAgent);
+
+// o Android avisa quando dá para instalar; guardamos para usar no botão
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); estado.convite = e; });
+addEventListener('appinstalled', () => { estado.convite = null; avisar('Pronto: a Área do Formando está na sua tela de início'); });
+
+const PASSOS_INSTALAR = {
+  ios: [
+    'Abra este site no <b>Safari</b> (no iPhone só funciona por ele).',
+    'Toque no botão <b>Compartilhar</b>, o quadradinho com a seta para cima, na barra de baixo.',
+    'Role a lista e toque em <b>Adicionar à Tela de Início</b>.',
+    'Confirme em <b>Adicionar</b>, no canto de cima.',
+  ],
+  android: [
+    'Toque nos <b>três pontinhos</b> do canto do navegador.',
+    'Escolha <b>Instalar aplicativo</b> (ou "Adicionar à tela inicial").',
+    'Confirme em <b>Instalar</b>.',
+  ],
+  computador: [
+    'Na barra de endereço, clique no ícone de <b>instalar</b> (um monitor com uma seta).',
+    'Confirme em <b>Instalar</b>.',
+  ],
+};
+
+function telaInstalar() {
+  const plataforma = ehIos() ? 'ios' : ehAndroid() ? 'android' : 'computador';
+  const nomes = { ios: 'iPhone e iPad', android: 'Android', computador: 'computador' };
+  const outra = plataforma === 'ios' ? 'android' : 'ios';
+
+  abrirFolha(`
+    <h2>Deixar na <em>tela de início</em></h2>
+    <div class="sub">A Área do Formando vira um atalho com o ícone da Indaiá, abre em tela cheia e
+    funciona mesmo com internet ruim.</div>
+
+    ${instalado() ? '<div class="faixa info"><div>Já está instalada neste aparelho.</div></div>' : `
+      ${estado.convite ? '<div class="acoes"><button class="botao" id="instalar-agora">Instalar agora</button></div>' : ''}
+      <div class="secao-titulo">No ${nomes[plataforma]}</div>
+      <ol class="passos">${PASSOS_INSTALAR[plataforma].map((t) => `<li>${t}</li>`).join('')}</ol>
+      <details class="faq-item">
+        <summary>No ${nomes[outra]}</summary>
+        <ol class="passos" style="padding:0 16px 14px 34px">${PASSOS_INSTALAR[outra].map((t) => `<li>${t}</li>`).join('')}</ol>
+      </details>`}
+
+    <p class="rodape-nota">Depois de instalada, ela também pode avisar você quando um boleto ficar
+    disponível ou um pedido for respondido — no iPhone, os avisos só funcionam com o atalho instalado.</p>
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `, (el) => {
+    el.querySelector('#instalar-agora')?.addEventListener('click', async () => {
+      const convite = estado.convite;
+      if (!convite) return;
+      estado.convite = null;
+      convite.prompt();
+      const { outcome } = await convite.userChoice;
+      if (outcome !== 'accepted') avisar('Sem problema: dá para instalar depois por aqui');
+      fecharFolha();
+    });
+  });
+}
+
 function abrirWhatsapp() {
   const numero = estado.config?.whatsappAtendimento;
   if (!numero) return avisar('WhatsApp do atendimento não configurado');
@@ -4385,6 +4542,12 @@ function sair() {
   estado.contrato = null; estado.turma = null;
   estado.aba = 'inicio'; estado.filtro = 'aberto'; estado.menuAberto = false;
   telaEntrar();
+}
+
+// O service worker deixa o site abrir sem internet e recebe a notificação quando
+// o envio for ligado. Falha calada: navegador antigo ou sem https segue normal.
+if ('serviceWorker' in navigator) {
+  addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 
 (async function iniciar() {
