@@ -927,6 +927,24 @@ main { max-width: none; margin: 0; }
 .crono-item.proximo .crono-simbolo { background: rgba(123, 78, 194, .18); border-color: var(--violet); }
 @media (max-width: 520px) { .crono-simbolo { width: 30px; height: 30px; margin-top: 10px; } .crono-simbolo svg { width: 16px; height: 16px; } }
 
+/* ==========================================================================
+   Financeiro: boleto único, comprovantes e parcela programada
+   ========================================================================== */
+/* "agendado" e "nao_gerado" são o mesmo estado para o formando: um selo só */
+.s-agendado { background: var(--superficie-2); color: var(--texto-suave); }
+.s-no_unico { background: rgba(123, 78, 194, .12); color: var(--accent-txt); }
+.s-comprovante { background: rgba(201, 162, 75, .16); color: var(--dourado-txt); margin-left: 6px; }
+.item .quanto b.apagado { color: var(--texto-suave); font-weight: 500; }
+
+/* quatro ações: duas por linha a partir do tablet */
+@media (min-width: 620px) { .acoes-financeiro { grid-template-columns: repeat(2, 1fr); } }
+
+/* na área de comprovantes a linha abre o arquivo */
+button.comprovante { width: 100%; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+button.comprovante:hover:not([disabled]) { border-color: var(--violet); }
+button.comprovante[disabled] { cursor: default; }
+.comprovante .quando .protocolo { margin-top: 4px; }
+
 </style>
 </head>
 <body>
@@ -966,7 +984,6 @@ main { max-width: none; margin: 0; }
   const solicitacoes = [];
   const contatoPendente = new Map();   // adesaoId -> { email, telefone, pedidoEm }
   const comprovantes = [];             // { id, adesaoId, billId, arquivo, ... }
-  const emitidos = new Set();
   const historicos = new Map();        // billId -> [{ quando, oQue, detalhe }]
   const lembretes = new Map();         // adesaoId -> dias de antecedência
   const presencas = new Map();         // adesaoId -> { [chaveEtapa]: 'sim' | 'nao' }
@@ -1008,47 +1025,117 @@ main { max-width: none; margin: 0; }
   const erro = (status, corpo) => Object.assign(new Error(corpo.erro), { status, corpo });
 
   function situacaoBoleto(b) {
-    if (b.status === 'agendado' && emitidos.has(b.id)) return 'em_aberto';
+    // Parcela que entrou num boleto único é paga por ele, não sozinha.
+    if (b.noUnico) return 'no_unico';
     // 2ª via com data nova tira a parcela do atraso até o novo vencimento.
     if (b.status === 'em_atraso' && b.vencimento >= HOJE) return 'em_aberto';
+    if (b.unico && b.status === 'em_aberto' && b.vencimento < HOJE) return 'em_atraso';
     return b.status;
   }
+
+  const nomeCobranca = (b) => (b.unico ? 'Boleto único' : `Parcela ${b.parcela}`);
 
   function projetarBoleto(b) {
     const status = situacaoBoleto(b);
     const emitido = status === 'em_aberto' || status === 'em_atraso';
     return {
-      id: b.id, parcela: b.parcela, descricao: b.descricao, vencimento: b.vencimento,
+      id: b.id, parcela: b.parcela, nome: nomeCobranca(b), descricao: b.descricao, vencimento: b.vencimento,
       valor: b.valor, status, pagoEm: b.pagoEm, valorPago: b.valorPago,
-      podeEmitir: status === 'agendado' && DADOS.config.permitirEmitirBoletoAgendado,
-      valorPleno: valorPleno(b.valor),
+      valorPleno: b.unico ? null : valorPleno(b.valor),
       descontoPontualidade: CONTRATO.descontoPontualidade,
       valorAtualizado: b.valorAtualizado || null,
       encargos: b.encargos || null,
       temLinhaDigitavel: emitido,
+      noUnico: b.noUnico || null,
+      unico: b.unico || null,
     };
   }
 
-  function resumoFinanceiro(adesao) {
-    const bs = adesao.boletos.map((b) => ({ ...b, status: situacaoBoleto(b) }));
-    const soma = (f) => Math.round(bs.filter(f).reduce((a, b) => a + b.valor, 0) * 100) / 100;
-    const emAberto = bs.filter((b) => b.status === 'em_aberto' || b.status === 'em_atraso');
-    const proxima = emAberto
-      .concat(bs.filter((b) => b.status === 'agendado' || b.status === 'nao_gerado'))
+  // O que se deve HOJE: vencida vale o pleno com os encargos da 4.3 até hoje.
+  async function projetarComValor(b) {
+    const p = projetarBoleto(b);
+    if (p.status === 'pago') p.valorDevido = b.valorPago || b.valor;
+    else if (p.status === 'em_atraso' && !b.unico) {
+      p.encargosHoje = await calcularEncargos(b, new Date(`${HOJE}T12:00:00`));
+      p.valorDevido = p.encargosHoje.total;
+    } else p.valorDevido = b.valorAtualizado || b.valor;
+    return p;
+  }
+
+  function resumoFinanceiro(adesao, projetados) {
+    const soma = (f) => arredonda(projetados.filter(f).reduce((a, b) => a + b.valorDevido, 0));
+    const proxima = projetados
+      .filter((b) => ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status))
       .filter((b) => b.vencimento >= HOJE)
       .sort((a, b) => a.vencimento.localeCompare(b.vencimento))[0];
     return {
       contratado: adesao.contrato.total,
       parcelas: adesao.contrato.parcelas,
       mensalidade: adesao.contrato.mensalidade,
-      pago: Math.round(bs.filter((b) => b.status === 'pago').reduce((a, b) => a + (b.valorPago || b.valor), 0) * 100) / 100,
+      pago: soma((b) => b.status === 'pago'),
       emAberto: soma((b) => b.status === 'em_aberto'),
       emAtraso: soma((b) => b.status === 'em_atraso'),
       aEmitir: soma((b) => b.status === 'agendado' || b.status === 'nao_gerado'),
-      parcelasPagas: bs.filter((b) => b.status === 'pago').length,
-      proximoVencimento: proxima
-        ? { vencimento: proxima.vencimento, valor: proxima.valor, status: proxima.status }
-        : null,
+      parcelasPagas: projetados.filter((b) => b.status === 'pago' && !b.unico).length,
+      proximoVencimento: proxima ? { vencimento: proxima.vencimento, valor: proxima.valorDevido, status: proxima.status } : null,
+    };
+  }
+
+  function validarSegundaVia(b, novoVencimento) {
+    if (b.unico) return erro(409, { erro: 'unico_sem_segunda_via' });
+    if (situacaoBoleto(b) !== 'em_atraso') return erro(409, { erro: 'nao_esta_vencida', status: situacaoBoleto(b) });
+    const hojeD = new Date(`${HOJE}T12:00:00`);
+    const novaData = new Date(`${novoVencimento}T12:00:00`);
+    if (Number.isNaN(novaData.getTime()) || novaData < hojeD) return erro(400, { erro: 'data_invalida' });
+    if ((novaData - hojeD) / 86400000 > 30) return erro(400, { erro: 'data_longe' });
+    return null;
+  }
+
+  // --- boleto único de antecipação (igual ao servidor.mjs) ----------------------
+  const DIAS_VENCIMENTO_UNICO = 3;
+  let sequencialUnico = 0;
+
+  async function montarUnico(adesao, billIds) {
+    const ids = Array.isArray(billIds) ? [...new Set(billIds.map(String))] : [];
+    if (!ids.length) throw erro(400, { erro: 'nenhuma_parcela' });
+    const escolhidas = [];
+    for (const id of ids) {
+      const b = adesao.boletos.find((x) => x.id === id);
+      if (!b || b.unico) throw erro(400, { erro: 'parcela_invalida' });
+      const s = situacaoBoleto(b);
+      if (s === 'pago' || s === 'no_unico') throw erro(400, { erro: 'parcela_indisponivel' });
+      escolhidas.push({ b, s });
+    }
+    escolhidas.sort((x, y) => x.b.parcela - y.b.parcela);
+
+    const venc = new Date(`${HOJE}T12:00:00`);
+    venc.setDate(venc.getDate() + DIAS_VENCIMENTO_UNICO);
+    const vencimento = venc.toISOString().slice(0, 10);
+
+    const parcelas = [];
+    for (const { b, s } of escolhidas) {
+      if (s === 'em_atraso') {
+        const e = await calcularEncargos(b, venc);
+        parcelas.push({ id: b.id, parcela: b.parcela, vencimento: b.vencimentoOriginal || b.vencimento, vencida: true, valorComPontualidade: b.valor, valor: e.total, encargos: e });
+      } else {
+        parcelas.push({ id: b.id, parcela: b.parcela, vencimento: b.vencimento, vencida: false, valorComPontualidade: b.valor, valor: b.valorAtualizado || b.valor, encargos: b.encargos || null });
+      }
+    }
+    const total = arredonda(parcelas.reduce((a, p) => a + p.valor, 0));
+    const primeira = parcelas[0].parcela;
+    const ultima = parcelas[parcelas.length - 1].parcela;
+    const turma = acharTurma(adesao.turmaId);
+    const id = `unico-${adesao.adesaoId}-${sequencialUnico + 1}`;
+    return {
+      id, parcela: null,
+      descricao: `${turma.eventoCrm} - BOLETO UNICO (parcela${parcelas.length > 1 ? `s ${primeira} a ${ultima}` : ` ${primeira}`})`,
+      vencimento, valor: total, status: 'em_aberto', pagoEm: null, valorPago: null,
+      linhaDigitavel: linhaFalsa(`${id}-${vencimento}`), pdfUrl: null, urlPagamento: null,
+      unico: {
+        parcelas,
+        economia: arredonda(parcelas.filter((p) => !p.vencida && !p.encargos).reduce((a, p) => a + (valorPleno(p.valorComPontualidade) - p.valor), 0)),
+        diasParaVencer: DIAS_VENCIMENTO_UNICO,
+      },
     };
   }
 
@@ -1241,18 +1328,19 @@ main { max-width: none; margin: 0; }
       for (const b of bs.filter((b) => b.status === 'em_atraso')) {
         itens.push({
           id: `atraso-${b.id}`, tipo: 'atraso', prioridade: 1,
-          titulo: `Parcela ${b.parcela} vencida`,
+          titulo: `${nomeCobranca(b)} vencida`,
           texto: `Venceu em ${b.vencimento.split('-').reverse().join('/')} — gere a 2ª via com data nova.`,
           quando: b.vencimento, ir: 'financeiro', billId: b.id,
         });
       }
-      for (const b of bs.filter((b) => b.status !== 'pago' && b.status !== 'em_atraso')) {
+      // "vence em N dias" só para o que já tem boleto na mão para pagar
+      for (const b of bs.filter((b) => b.status === 'em_aberto')) {
         const d = emDias(b.vencimento);
         if (d >= 0 && d <= 10) {
           itens.push({
             id: `vence-${b.id}`, tipo: 'vencimento', prioridade: 2,
-            titulo: `Parcela ${b.parcela} vence ${d === 0 ? 'hoje' : d === 1 ? 'amanhã' : `em ${d} dias`}`,
-            texto: `${b.vencimento.split('-').reverse().join('/')} · R$ ${b.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
+            titulo: `${nomeCobranca(b)} vence ${d === 0 ? 'hoje' : d === 1 ? 'amanhã' : `em ${d} dias`}`,
+            texto: `${b.vencimento.split('-').reverse().join('/')} · R$ ${(b.valorAtualizado || b.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`,
             quando: b.vencimento, ir: 'financeiro', billId: b.id,
           });
         }
@@ -1300,7 +1388,6 @@ main { max-width: none; margin: 0; }
     'GET /config': () => ({
       whatsappAtendimento: DADOS.config.whatsappAtendimento,
       nomeAtendimento: DADOS.config.nomeAtendimento,
-      permitirEmitirBoletoAgendado: DADOS.config.permitirEmitirBoletoAgendado,
       mostrarReajusteProgramado: DADOS.config.mostrarReajusteProgramado,
       modoDev: true,
       demo: true,
@@ -1447,10 +1534,23 @@ main { max-width: none; margin: 0; }
     'GET /financeiro': (t) => {
       const a = daSessao(t);
       if (a.situacao === 'cancelada') throw erro(409, { erro: 'adesao_cancelada', canceladaEm: a.canceladaEm });
+      return Promise.all(a.boletos.map(projetarComValor)).then((boletos) => {
+        for (const p of boletos) p.qtdComprovantes = comprovantes.filter((c) => c.adesaoId === a.adesaoId && c.billId === p.id).length;
+        return { resumo: resumoFinanceiro(a, boletos), boletos };
+      });
+    },
+
+    // meus comprovantes: tudo o que o formando anexou
+    'GET /comprovantes': (t) => {
+      const a = daSessao(t);
       return {
-        resumo: resumoFinanceiro(a),
-        reajuste: DADOS.config.mostrarReajusteProgramado ? a.reajuste : null,
-        boletos: a.boletos.map(projetarBoleto),
+        comprovantes: comprovantes
+          .filter((c) => c.adesaoId === a.adesaoId)
+          .sort((x, y) => y.enviadoEm.localeCompare(x.enviadoEm))
+          .map(({ conteudo, adesaoId, ...resto }) => {
+            const b = a.boletos.find((x) => x.id === resto.billId);
+            return { ...resto, cobranca: b ? nomeCobranca(b) : '—', vencimento: b?.vencimento || null, temArquivo: Boolean(conteudo) };
+          }),
       };
     },
 
@@ -1548,9 +1648,9 @@ main { max-width: none; margin: 0; }
       const b = a.boletos.find((x) => x.id === m1[1]);
       if (!b) throw erro(404, { erro: 'nao_encontrado' });   // boleto de outra pessoa: 404, nunca 403
       const status = situacaoBoleto(b);
-      const escondido = status === 'agendado' || status === 'nao_gerado';
+      const escondido = status === 'agendado' || status === 'nao_gerado' || status === 'no_unico';
       return {
-        ...projetarBoleto(b),
+        ...(await projetarComValor(b)),
         linhaDigitavel: escondido ? null : b.linhaDigitavel,
         pdfUrl: escondido ? null : b.pdfUrl,
         urlPagamento: escondido ? null : b.urlPagamento,
@@ -1591,18 +1691,26 @@ main { max-width: none; margin: 0; }
       };
     }
 
+    // prévia da 2ª via: a mesma conta do boleto, sem gerar nada
+    const ms = caminho.match(/^\/financeiro\/([\w-]+)\/segunda-via\/simular$/);
+    if (metodo === 'POST' && ms) {
+      const a = daSessao(token);
+      const b = a.boletos.find((x) => x.id === ms[1]);
+      if (!b) throw erro(404, { erro: 'nao_encontrado' });
+      const problema = validarSegundaVia(b, corpo.novoVencimento);
+      if (problema) throw problema;
+      return calcularEncargos(b, new Date(`${corpo.novoVencimento}T12:00:00`));
+    }
+
     // 2ª via de parcela vencida, com encargos
     const mv = caminho.match(/^\/financeiro\/([\w-]+)\/segunda-via$/);
     if (metodo === 'POST' && mv) {
       const a = daSessao(token);
       const b = a.boletos.find((x) => x.id === mv[1]);
       if (!b) throw erro(404, { erro: 'nao_encontrado' });
-      if (situacaoBoleto(b) !== 'em_atraso') throw erro(409, { erro: 'nao_esta_vencida', status: situacaoBoleto(b) });
-
-      const hojeD = new Date(`${HOJE}T12:00:00`);
+      const problema = validarSegundaVia(b, corpo.novoVencimento);
+      if (problema) throw problema;
       const novaData = new Date(`${corpo.novoVencimento}T12:00:00`);
-      if (Number.isNaN(novaData.getTime()) || novaData < hojeD) throw erro(400, { erro: 'data_invalida' });
-      if ((novaData - hojeD) / 86400000 > 30) throw erro(400, { erro: 'data_longe' });
 
       b.vencimentoOriginal = b.vencimentoOriginal || b.vencimento;
       const encargos = await calcularEncargos(b, novaData);
@@ -1621,18 +1729,30 @@ main { max-width: none; margin: 0; }
       };
     }
 
-    const m2 = caminho.match(/^\/financeiro\/([\w-]+)\/emitir$/);
-    if (metodo === 'POST' && m2) {
+    // antecipação: /simular devolve a composição; sem sufixo, gera o boleto único
+    const ma = caminho.match(/^\/financeiro\/antecipar(\/simular)?$/);
+    if (metodo === 'POST' && ma) {
       const a = daSessao(token);
-      const b = a.boletos.find((x) => x.id === m2[1]);
-      if (!b) throw erro(404, { erro: 'nao_encontrado' });
-      if (situacaoBoleto(b) !== 'agendado') throw erro(409, { erro: 'boleto_nao_agendado', status: situacaoBoleto(b) });
-      emitidos.add(b.id);
-      registrarHistorico(b.id, 'Boleto emitido a pedido', `Vencimento ${b.vencimento.split('-').reverse().join('/')}`);
-      b.linhaDigitavel = b.linhaDigitavel || linhaFalsa(b.id);
-      b.pdfUrl = b.pdfUrl || `#/boleto/${b.id}`;
-      b.urlPagamento = b.urlPagamento || `#/pagar/${b.id}`;
-      return { ...projetarBoleto(b), linhaDigitavel: b.linhaDigitavel, pdfUrl: b.pdfUrl, urlPagamento: b.urlPagamento };
+      const u = await montarUnico(a, corpo.billIds);
+      if (ma[1]) return u;
+      sequencialUnico += 1;
+      a.boletos.push(u);
+      for (const item of u.unico.parcelas) {
+        const b = a.boletos.find((x) => x.id === item.id);
+        b.noUnico = u.id;
+        registrarHistorico(b.id, 'Incluída no boleto único', `Vence em ${u.vencimento.split('-').reverse().join('/')}`);
+      }
+      registrarHistorico(u.id, 'Boleto único gerado', `${u.unico.parcelas.length} parcela(s) · total ${u.valor}`);
+      return { ...(await projetarComValor(u)), linhaDigitavel: u.linhaDigitavel };
+    }
+
+    // o arquivo do comprovante, para abrir na tela
+    const mc = caminho.match(/^\/comprovantes\/([\w-]+)$/);
+    if (metodo === 'GET' && mc) {
+      const a = daSessao(token);
+      const c = comprovantes.find((x) => x.id === mc[1] && x.adesaoId === a.adesaoId);
+      if (!c) throw erro(404, { erro: 'nao_encontrado' });
+      return { id: c.id, arquivo: c.arquivo, tipo: c.tipo, conteudo: c.conteudo };
     }
 
     // Os dados que o PDF mostraria. A página monta a prévia na tela.
@@ -1649,13 +1769,14 @@ main { max-width: none; margin: 0; }
         turma: turma.rotulo,
         evento: turma.eventoCrm,
         parcela: b.parcela,
+        unico: Boolean(b.unico),
         totalParcelas: a.contrato.parcelas,
         descricao: b.descricao,
         vencimento: b.vencimento,
-        valor: b.valor,
+        valor: b.valorAtualizado || b.valor,
         status: situacaoBoleto(b),
         pagoEm: b.pagoEm,
-        linhaDigitavel: situacaoBoleto(b) === 'agendado' || situacaoBoleto(b) === 'nao_gerado' ? null : b.linhaDigitavel,
+        linhaDigitavel: ['agendado', 'nao_gerado', 'no_unico'].includes(situacaoBoleto(b)) ? null : b.linhaDigitavel,
       };
     }
 
@@ -1684,7 +1805,7 @@ main { max-width: none; margin: 0; }
       };
       comprovantes.push(registro);
       const pedidoComp = novaSolicitacao(a, 'comprovante', {
-        mensagem: `Parcela ${b.parcela} · ${registro.arquivo}`,
+        mensagem: `${nomeCobranca(b)} · ${registro.arquivo}`,
         billId: b.id,
       });
       registro.protocolo = pedidoComp.protocolo;
@@ -1758,10 +1879,20 @@ const semMarca = (n) => String(n || '').replace(/\s*\(TESTE\)\s*/i, '').trim();
 const hoje = () => estado.config?.hojeSimulado || new Date().toISOString().slice(0, 10);
 const diasAte = (iso) => Math.round((new Date(`${iso}T12:00:00`) - new Date(`${hoje()}T12:00:00`)) / 86400000);
 
+// "agendado" e "nao_gerado" são diferentes na Vindi, mas para o formando são a
+// mesma coisa: o boleto ainda não foi gerado.
 const ROTULO_STATUS = {
   pago: 'Pago', em_aberto: 'Em aberto', em_atraso: 'Em atraso',
-  agendado: 'A emitir', nao_gerado: 'Programada',
+  agendado: 'Programada', nao_gerado: 'Programada', no_unico: 'No boleto único',
 };
+
+const nomeCobranca = (b) => b.nome || (b.unico ? 'Boleto único' : `Parcela ${b.parcela}`);
+const rotuloParcelas = (ps) => (ps.length === 1 ? `parcela ${ps[0].parcela}` : `parcelas ${ps[0].parcela} a ${ps[ps.length - 1].parcela}`);
+const maiuscula = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+// a linha de apoio de uma cobrança: "Parcela 6" ou, no boleto único, "Parcelas 6 a 8"
+const apoioCobranca = (b) => (b.unico ? maiuscula(rotuloParcelas(b.unico.parcelas)) : nomeCobranca(b));
+// o que se deve hoje: vencida já vem com os encargos, 2ª via com o valor novo
+const devido = (b) => b.valorDevido ?? b.valorAtualizado ?? b.valor;
 
 function avisar(texto) {
   toast.textContent = texto;
@@ -2229,41 +2360,56 @@ function notaRodape() {
 }
 
 // ---------- pedaços reaproveitados ------------------------------------------
+// A próxima cobrança a pagar: vencida primeiro, depois o que já tem boleto,
+// depois o que ainda vai ser gerado. Parcela que está num boleto único não conta
+// — quem conta é o boleto único.
 function proximaParaPagar() {
   const bs = estado.financeiro?.boletos || [];
-  const ordem = { em_atraso: 0, em_aberto: 1, agendado: 2, nao_gerado: 3 };
-  return bs.filter((b) => b.status !== 'pago')
+  const ordem = { em_atraso: 0, em_aberto: 1, agendado: 2, nao_gerado: 2 };
+  return bs.filter((b) => b.status in ordem)
     .sort((a, b) => (ordem[a.status] - ordem[b.status]) || a.vencimento.localeCompare(b.vencimento))[0];
 }
 
 function cartaoDestaque(b) {
   if (!b) return '';
   const atraso = b.status === 'em_atraso';
+  const temBoleto = b.status === 'em_aberto' || atraso;
   return `
     <div class="cartao destaque">
-      <div class="rotulo">${atraso ? 'Parcela em atraso' : 'Próxima parcela'}</div>
-      <div class="valor-grande">${brl(b.valor)}</div>
-      <div class="quando">Parcela ${b.parcela} · ${atraso ? `venceu em ${dataCurta(b.vencimento)}` : `vence em ${dataCurta(b.vencimento)}`}</div>
-      <div class="acoes"><button class="botao" data-boleto="${escapar(b.id)}">${b.status === 'agendado' ? 'Quero pagar agora' : 'Ver boleto'}</button></div>
+      <div class="rotulo">${atraso ? `${nomeCobranca(b)} em atraso` : b.unico ? 'Boleto único' : 'Próxima parcela'}</div>
+      <div class="valor-grande">${brl(devido(b))}</div>
+      <div class="quando">${escapar(apoioCobranca(b))} · ${atraso ? `venceu em ${dataCurta(b.vencimento)}` : `vence em ${dataCurta(b.vencimento)}`}</div>
+      <div class="acoes"><button class="botao" data-boleto="${escapar(b.id)}">${atraso ? 'Gerar 2ª via' : temBoleto ? 'Ver boleto' : 'Ver parcela'}</button></div>
     </div>`;
 }
 
 function itemBoleto(b) {
-  const clicavel = b.status !== 'nao_gerado';
-  // Cláusula 4.4: a cobrança mostra os dois valores — o com pontualidade e o pleno.
-  const mostrarPleno = b.status !== 'pago' && b.valorPleno > b.valor;
+  const atraso = b.status === 'em_atraso';
+  // Cláusula 4.4: enquanto dá para pagar em dia, a linha mostra os dois valores —
+  // o com pontualidade e o pleno. Vencida já não tem desconto: mostra o que se
+  // deve hoje.
+  const mostrarPleno = ['em_aberto', 'agendado', 'nao_gerado'].includes(b.status) && !b.valorAtualizado && b.valorPleno > b.valor;
+  // parcela no boleto único abre o boleto único
+  const alvo = b.status === 'no_unico' ? b.noUnico : b.id;
+  const faixa = b.unico ? `${maiuscula(rotuloParcelas(b.unico.parcelas))} · ` : '';
+  const quando = b.status === 'pago' ? `${faixa}${b.unico ? 'pago' : 'Pago'} em ${dataCurta(b.pagoEm)}`
+    : b.status === 'no_unico' ? 'Paga pelo boleto único'
+    : atraso ? `${faixa}${b.unico ? 'venceu' : 'Venceu'} em ${dataCurta(b.vencimento)}`
+    : `${faixa}${b.unico ? 'vence' : 'Vence'} em ${dataCurta(b.vencimento)}`;
   return `
-    <button class="item ${clicavel ? '' : 'inerte'}" ${clicavel ? `data-boleto="${escapar(b.id)}"` : ''}>
+    <button class="item" data-boleto="${escapar(alvo)}">
       <div class="quando">
-        <strong>Parcela ${b.parcela} · ${mesAno(b.vencimento)}</strong>
-        <span>${b.status === 'pago' ? `Pago em ${dataCurta(b.pagoEm)}` : `Vence em ${dataCurta(b.vencimento)}`}</span>
+        <strong>${escapar(nomeCobranca(b))} · ${mesAno(b.vencimento)}</strong>
+        <span>${quando}</span>
         <br><span class="marca-status s-${b.status}">${ROTULO_STATUS[b.status]}</span>
+        ${b.qtdComprovantes ? '<span class="marca-status s-comprovante">Comprovante enviado</span>' : ''}
       </div>
       <div class="quanto">
         ${mostrarPleno ? `<span class="pleno" title="valor pleno, sem o desconto de pontualidade">${brl(b.valorPleno)}</span>` : ''}
-        <b>${brl(b.valor)}</b>
+        <b class="${b.status === 'no_unico' ? 'apagado' : ''}">${brl(devido(b))}</b>
+        ${atraso ? '<span class="economia">com encargos até hoje</span>' : ''}
       </div>
-      ${clicavel ? '<div class="seta">›</div>' : ''}
+      <div class="seta">›</div>
     </button>`;
 }
 
@@ -2385,10 +2531,14 @@ const FILTROS = [
 
 function abaFinanceiro() {
   const { resumo, boletos } = estado.financeiro;
+  // o boleto único mora numa seção própria; a lista é das parcelas do contrato
+  const parcelas = boletos.filter((b) => !b.unico);
+  const unicos = boletos.filter((b) => b.unico && b.status !== 'pago');
   const pct = resumo.contratado ? Math.min(100, (resumo.pago / resumo.contratado) * 100) : 0;
   const filtro = FILTROS.find((f) => f.id === estado.filtro) || FILTROS[0];
-  const lista = boletos.filter(filtro.teste).sort((a, b) => (filtro.id === 'pagas' ? -1 : 1) * a.vencimento.localeCompare(b.vencimento));
+  const lista = parcelas.filter(filtro.teste).sort((a, b) => (filtro.id === 'pagas' ? -1 : 1) * a.vencimento.localeCompare(b.vencimento));
   const proxima = proximaParaPagar();
+  const podeAntecipar = parcelas.some((b) => ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status));
 
   const emAberto = resumo.emAberto + resumo.emAtraso + resumo.aEmitir;
   const atrasadas = boletos.filter((b) => b.status === 'em_atraso');
@@ -2424,11 +2574,11 @@ function abaFinanceiro() {
       ${proxima ? `
         <div class="proxima ${proxima.status === 'em_atraso' ? 'atrasada' : ''}">
           <div>
-            <div class="rot" style="font-size:13px;color:rgba(242,233,218,.6)">${proxima.status === 'em_atraso' ? 'Parcela em atraso' : 'Próxima parcela'}</div>
-            <div class="valor">${brl(proxima.valor)}</div>
-            <div class="quando">Parcela ${proxima.parcela} · ${proxima.status === 'em_atraso' ? 'venceu' : 'vence'} em ${dataCurta(proxima.vencimento)}</div>
+            <div class="rot" style="font-size:13px;color:rgba(242,233,218,.6)">${proxima.status === 'em_atraso' ? `${escapar(nomeCobranca(proxima))} em atraso` : proxima.unico ? 'Boleto único' : 'Próxima parcela'}</div>
+            <div class="valor">${brl(devido(proxima))}</div>
+            <div class="quando">${escapar(apoioCobranca(proxima))} · ${proxima.status === 'em_atraso' ? 'venceu' : 'vence'} em ${dataCurta(proxima.vencimento)}${proxima.status === 'em_atraso' ? ' · valor com encargos até hoje' : ''}</div>
           </div>
-          <button class="botao" data-boleto="${escapar(proxima.id)}">${proxima.status === 'agendado' ? 'Quero pagar agora' : 'Ver boleto'}</button>
+          <button class="botao" data-boleto="${escapar(proxima.id)}">${proxima.status === 'em_atraso' ? 'Gerar 2ª via' : proxima.status === 'em_aberto' ? 'Ver boleto' : 'Ver parcela'}</button>
         </div>` : ''}
     </div>
 
@@ -2449,14 +2599,18 @@ function abaFinanceiro() {
       </div>` : ''}
 
     <div class="acoes-financeiro">
-      ${boletos.some((b) => b.status !== 'pago') ? `
+      ${podeAntecipar ? `
         <button class="acao-financeira" id="antecipar">
           <span class="ico">${ICONES.antecipar}</span>
-          <span><strong>Antecipar ou quitar</strong><span class="desc">Com o desconto de pontualidade</span></span>
+          <span><strong>Antecipar ou quitar</strong><span class="desc">Boleto único na hora</span></span>
         </button>` : ''}
       <button class="acao-financeira" id="ver-extrato">
         <span class="ico">${ICONES.extrato}</span>
         <span><strong>Extrato</strong><span class="desc">Tudo o que você já pagou</span></span>
+      </button>
+      <button class="acao-financeira" id="ver-comprovantes">
+        <span class="ico">${ICONES.anexo}</span>
+        <span><strong>Meus comprovantes</strong><span class="desc">Tudo o que você anexou</span></span>
       </button>
       <button class="acao-financeira" id="informe-ir">
         <span class="ico">${ICONES.informe}</span>
@@ -2464,10 +2618,14 @@ function abaFinanceiro() {
       </button>
     </div>
 
+    ${unicos.length ? `
+      <div class="secao-titulo">Boleto único</div>
+      <div class="lista" style="margin-bottom:14px">${unicos.map(itemBoleto).join('')}</div>` : ''}
+
     <div class="secao-titulo">Minhas parcelas</div>
     <div class="filtros">
       ${FILTROS.map((f) => {
-        const n = boletos.filter(f.teste).length;
+        const n = parcelas.filter(f.teste).length;
         // chip com contagem zero só ocupa espaço para dizer que não há nada
         if (!n && f.id !== 'todas' && f.id !== estado.filtro) return '';
         return `<button data-filtro="${f.id}" class="${f.id === estado.filtro ? 'ativo' : ''}"><i class="ponto p-${f.id}"></i>${f.rotulo} · ${n}</button>`;
@@ -2476,12 +2634,13 @@ function abaFinanceiro() {
     ${lista.length ? listaPorAno(lista)
       : '<div class="cartao plano"><div class="vazio">Nenhuma parcela nesta situação.</div></div>'}
 
-    <p class="rodape-nota">As parcelas marcadas como <b>programada</b> ainda não têm boleto — ele é gerado alguns dias antes do vencimento. As marcadas como <b>a emitir</b> você pode adiantar por aqui.</p>
+    <p class="rodape-nota">As parcelas <b>programadas</b> ainda não têm boleto — ele é gerado alguns dias antes do vencimento. Para pagar antes, use <b>Antecipar ou quitar</b>: o boleto único sai na hora.</p>
     ${notaRodape()}
   `, `${resumo.parcelasPagas} de ${resumo.parcelas} parcelas pagas`);
 
   app.querySelectorAll('[data-filtro]').forEach((b) => b.addEventListener('click', () => { estado.filtro = b.dataset.filtro; abaFinanceiro(); }));
   app.querySelector('#antecipar')?.addEventListener('click', simulacaoAntecipacao);
+  app.querySelector('#ver-comprovantes')?.addEventListener('click', telaComprovantes);
   app.querySelector('#renegociar')?.addEventListener('click', simulacaoRenegociacao);
   app.querySelector('#ver-extrato')?.addEventListener('click', telaExtrato);
   app.querySelector('#informe-ir')?.addEventListener('click', telaInformeIr);
@@ -2489,103 +2648,118 @@ function abaFinanceiro() {
 }
 
 // ---------- antecipar / quitar ----------------------------------------------
-// O termo de adesão não prevê desconto por antecipação: o único desconto é o de
-// pontualidade da cláusula 4.1, que já vale para quem paga até o vencimento.
-// Então aqui a conta é simples — a soma das parcelas com o desconto mantido — e
-// qualquer condição diferente é negociada com a equipe.
-function simularLote(boletos) {
-  let comPontualidade = 0, pleno = 0;
-  for (const b of boletos) {
-    comPontualidade += b.valor;
-    pleno += b.valorPleno || b.valor;
-  }
-  comPontualidade = Math.round(comPontualidade * 100) / 100;
-  pleno = Math.round(pleno * 100) / 100;
-  return {
-    qtd: boletos.length,
-    bruto: pleno,
-    liquido: comPontualidade,
-    desconto: Math.round((pleno - comPontualidade) * 100) / 100,
-  };
-}
-
-function simulacaoAntecipacao() {
-  const abertos = estado.financeiro.boletos
-    .filter((b) => b.status !== 'pago')
-    .sort((a, b) => a.vencimento.localeCompare(b.vencimento));
-  const vencidas = abertos.filter((b) => b.status === 'em_atraso');
+// Decisão da equipe: o portal emite o boleto único na hora, sem aprovação caso a
+// caso. A conta vem do servidor (/financeiro/antecipar/simular) — é a mesma que
+// gera o boleto, então o valor da simulação é o valor do boleto. Parcela em dia
+// entra com o desconto de pontualidade (4.1); vencida, pelo pleno com os
+// encargos até o vencimento do boleto único (4.3).
+async function simulacaoAntecipacao() {
+  const abertas = estado.financeiro.boletos
+    .filter((b) => !b.unico && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status))
+    .sort((a, b) => a.parcela - b.parcela);
+  const vencidas = abertas.filter((b) => b.status === 'em_atraso');
 
   const opcoes = [
-    { id: '3', rotulo: 'Próximas 3 parcelas', lista: abertos.slice(0, 3) },
-    { id: '6', rotulo: 'Próximas 6 parcelas', lista: abertos.slice(0, 6) },
-    { id: '12', rotulo: 'Próximas 12 parcelas', lista: abertos.slice(0, 12) },
-    { id: 'tudo', rotulo: 'Quitar o contrato', lista: abertos },
-  ].filter((o) => o.lista.length);
+    { id: '3', rotulo: 'Próximas 3 parcelas', lista: abertas.slice(0, 3) },
+    { id: '6', rotulo: 'Próximas 6 parcelas', lista: abertas.slice(0, 6) },
+    { id: '12', rotulo: 'Próximas 12 parcelas', lista: abertas.slice(0, 12) },
+    { id: 'tudo', rotulo: 'Quitar o contrato', lista: abertas },
+  ]
+    // sem opção repetida: com 5 parcelas em aberto, "6" e "12" seriam o mesmo que quitar
+    .filter((o) => o.lista.length && (o.id === 'tudo' || o.lista.length < abertas.length));
 
-  const linha = (o) => {
-    const s = simularLote(o.lista);
-    return `
-      <button class="opcao-antecipa" data-opcao="${o.id}">
-        <div class="quando">
-          <strong>${o.rotulo}</strong>
-          <span>${s.qtd} parcela${s.qtd > 1 ? 's' : ''} · valor pleno ${brl(s.bruto)}</span>
-        </div>
-        <div class="quanto">
-          <b>${brl(s.liquido)}</b>
-          <span class="economia">com o desconto de pontualidade</span>
-        </div>
-      </button>`;
-  };
+  if (!opcoes.length) return avisar('Não há parcelas para antecipar');
+
+  abrirFolha('<div class="vazio">Calculando…</div>');
+  let sims;
+  try {
+    sims = await Promise.all(opcoes.map((o) => chamar('/financeiro/antecipar/simular', {
+      method: 'POST', body: JSON.stringify({ billIds: o.lista.map((b) => b.id) }),
+    })));
+  } catch { return abrirFolha('<div class="vazio">Não foi possível simular agora.</div>'); }
 
   abrirFolha(`
     <h2>Antecipar ou <em>quitar</em></h2>
-    <div class="sub">Pagar adiantado mantém o desconto de pontualidade ${clausula("4.1")} em todas as parcelas do lote.</div>
+    <div class="sub">Escolha o que pagar e o boleto único sai na hora, com vencimento em ${sims[0].unico.diasParaVencer} dias.
+    Parcela em dia mantém o desconto de pontualidade ${clausula("4.1")}.</div>
 
-    ${vencidas.length ? `<div class="faixa alerta">${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'} pelo valor pleno, com juros de mora — o desconto de pontualidade só vale para o que ainda não venceu ${clausula("4.2")}.</div>` : ''}
+    ${vencidas.length ? `<div class="faixa alerta"><div>${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'}
+      pelo valor pleno, corrigido pelo IPCA e com juros de mora de 1% ao mês até o vencimento do boleto único ${clausula("4.3")}.</div></div>` : ''}
 
-    <div class="lista-antecipa">${opcoes.map(linha).join('')}</div>
+    <div class="lista-antecipa">
+      ${opcoes.map((o, i) => `
+        <button class="opcao-antecipa" data-opcao="${i}">
+          <div class="quando">
+            <strong>${o.rotulo}</strong>
+            <span>${maiuscula(rotuloParcelas(sims[i].unico.parcelas))}</span>
+          </div>
+          <div class="quanto">
+            <b>${brl(sims[i].valor)}</b>
+            ${sims[i].unico.economia > 0 ? `<span class="economia">economia de ${brl(sims[i].unico.economia)}</span>` : ''}
+          </div>
+        </button>`).join('')}
+    </div>
 
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
   `, (el) => {
     el.querySelectorAll('[data-opcao]').forEach((b) => b.addEventListener('click', () => {
-      const o = opcoes.find((x) => x.id === b.dataset.opcao);
-      confirmarAntecipacao(o);
+      const i = Number(b.dataset.opcao);
+      confirmarAntecipacao(opcoes[i], sims[i]);
     }));
   });
 }
 
-function confirmarAntecipacao(opcao) {
-  const s = simularLote(opcao.lista);
-  const primeira = opcao.lista[0], ultima = opcao.lista[opcao.lista.length - 1];
+function confirmarAntecipacao(opcao, sim) {
+  const ps = sim.unico.parcelas;
+  const linhaParcela = (p) => `
+    <div class="dado">
+      <span>Parcela ${p.parcela}${p.vencida ? ' <small>(vencida · pleno + IPCA + juros)</small>' : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
+      <b>${brl(p.valor)}</b>
+    </div>`;
+  // quitar o contrato tem dezenas de parcelas: as primeiras à vista, o resto recolhido
+  const visiveis = ps.slice(0, 6);
+  const resto = ps.slice(6);
 
   abrirFolha(`
     <h2>${escapar(opcao.rotulo)}</h2>
-    <div class="sub">Parcela ${primeira.parcela} a ${ultima.parcela} · vencimentos de ${mesAno(primeira.vencimento)} a ${mesAno(ultima.vencimento)}</div>
+    <div class="sub">${maiuscula(rotuloParcelas(ps))} num boleto só</div>
 
-    <div class="dado"><span>Soma pelo valor pleno</span><b>${brl(s.bruto)}</b></div>
-    <div class="dado"><span>Desconto de pontualidade ${clausula("4.1")}</span><b class="verde">− ${brl(s.desconto)}</b></div>
-    <div class="dado"><span>Total a pagar</span><b class="destaque-valor">${brl(s.liquido)}</b></div>
+    <div class="secao-titulo">O que entra no boleto</div>
+    ${visiveis.map(linhaParcela).join('')}
+    ${resto.length ? `
+      <details class="faq-item" style="margin-top:8px">
+        <summary>e mais ${resto.length} parcela${resto.length > 1 ? 's' : ''}</summary>
+        <div style="padding:0 16px 8px">${resto.map(linhaParcela).join('')}</div>
+      </details>` : ''}
 
+    <div class="secao-titulo">Boleto único</div>
+    ${sim.unico.economia > 0 ? `<div class="dado"><span>Desconto de pontualidade mantido ${clausula("4.1")}</span><b class="verde">${brl(sim.unico.economia)}</b></div>` : ''}
+    <div class="dado"><span>Vencimento</span><b>${dataCurta(sim.vencimento)}</b></div>
+    <div class="dado"><span>Total</span><b class="destaque-valor">${brl(sim.valor)}</b></div>
+
+    <p class="rodape-nota">Depois de gerado, as parcelas acima passam a ser pagas por este boleto —
+    elas saem da lista de parcelas em aberto.</p>
     <div class="acoes dupla">
-      <button class="botao" id="pedir-antecipa">Pedir esta proposta</button>
+      <button class="botao" id="gerar-unico">Gerar boleto único</button>
       <button class="botao secundario" id="voltar-antecipa">Ver outras opções</button>
     </div>
   `, (el) => {
     el.querySelector('#voltar-antecipa').addEventListener('click', simulacaoAntecipacao);
-    el.querySelector('#pedir-antecipa').addEventListener('click', async (e) => {
-      e.target.disabled = true; e.target.textContent = 'Enviando…';
+    el.querySelector('#gerar-unico').addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Gerando…';
       try {
-        await chamar('/solicitacoes', {
-          method: 'POST',
-          body: JSON.stringify({
-            tipo: 'antecipacao',
-            quantidade: s.qtd,
-            mensagem: `${opcao.rotulo}: parcelas ${primeira.parcela} a ${ultima.parcela}, ${brl(s.bruto)} com desconto de ${brl(s.desconto)} — ${brl(s.liquido)} à vista.`,
-          }),
+        const novo = await chamar('/financeiro/antecipar', {
+          method: 'POST', body: JSON.stringify({ billIds: ps.map((p) => p.id) }),
         });
-        fecharFolha();
-        avisar('Pedido enviado. A equipe confirma o valor com você.');
-      } catch { avisar('Não foi possível enviar agora'); }
+        estado.financeiro = await chamar('/financeiro');
+        estado.avisos = await chamar('/notificacoes').catch(() => estado.avisos);
+        abaFinanceiro();
+        avisar('Boleto único gerado');
+        abrirBoleto(novo.id);
+      } catch {
+        e.target.disabled = false; e.target.textContent = 'Gerar boleto único';
+        avisar('Não foi possível gerar o boleto agora');
+      }
     });
   });
 }
@@ -2599,7 +2773,7 @@ function listaPorAno(boletos) {
   const anoAtual = hoje().slice(0, 4);
   return anos.map((ano) => {
     const doAno = boletos.filter((b) => b.vencimento.startsWith(ano));
-    const total = doAno.reduce((a, b) => a + b.valor, 0);
+    const total = doAno.reduce((a, b) => a + devido(b), 0);
     const atrasadas = doAno.filter((b) => b.status === 'em_atraso').length;
     const aberto = ano === anoAtual || atrasadas > 0;
     return `
@@ -2633,31 +2807,71 @@ function corpoDoAno(doAno) {
     <div class="lista">${resto.map(itemBoleto).join('')}</div>`;
 }
 
+// Onde o valor mudou por atraso, a tela explica a conta — e só aqui o IPCA
+// aparece pelo nome (decisão da equipe, 22/09/2026): no momento de pagar uma
+// cobrança vencida ou com valor atualizado, não como aviso solto pelo site.
+function composicaoAtraso(e, rotuloTotal) {
+  return `
+    <div class="dado"><span>Valor pleno, sem o desconto ${clausula("4.1")}</span><b>${brl(e.valorPleno)}</b></div>
+    <div class="dado">
+      <span>Correção pelo IPCA <small>${e.ipcaMeses ? `(${e.ipcaMeses} ${e.ipcaMeses === 1 ? 'mês' : 'meses'} publicados pelo IBGE)` : '(nenhum mês fechado desde o vencimento)'}</small></span>
+      <b>${e.correcaoIpca ? `+ ${brl(e.correcaoIpca)}` : brl(0)}</b>
+    </div>
+    <div class="dado"><span>Juros de mora <small>(1% ao mês, ${e.diasAtraso} dia${e.diasAtraso === 1 ? '' : 's'})</small></span><b>+ ${brl(e.juros)}</b></div>
+    <div class="dado"><span>${rotuloTotal}</span><b class="destaque-valor">${brl(e.total)}</b></div>
+    <p class="rodape-nota" style="margin-top:8px">Depois do vencimento a parcela deixa de ter o desconto
+    de pontualidade e passa a valer o pleno, corrigido pelo IPCA e com juros de mora de 1% ao mês
+    ${clausula("4.3")}.</p>`;
+}
+
 async function abrirBoleto(id) {
   abrirFolha('<div class="vazio">Carregando…</div>');
   let b;
   try { b = await chamar(`/financeiro/${id}`); }
-  catch { return abrirFolha('<div class="vazio">Não foi possível abrir esta parcela.</div>'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir esta cobrança.</div>'); }
+  // parcela que está num boleto único se paga por ele
+  if (b.status === 'no_unico' && b.noUnico) return abrirBoleto(b.noUnico);
 
-  const corpo = `
-    <h2>Parcela ${b.parcela}</h2>
-    <div class="sub">${escapar(ROTULO_STATUS[b.status])} · vence em ${dataLonga(b.vencimento)}</div>
-    ${b.encargos ? `
-      <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(b.encargos.valorPleno)}</b></div>
-      <div class="dado"><span>Encargos de atraso <small>(${b.encargos.diasAtraso} dias)</small></span><b>+ ${brl(Math.round((b.encargos.correcaoIpca + b.encargos.juros) * 100) / 100)}</b></div>
-      <div class="dado"><span>Total da 2ª via</span><b class="destaque-valor">${brl(b.valorAtualizado)}</b></div>
-    ` : `
-      <div class="dado"><span>Pagando até o vencimento</span><b class="destaque-valor">${brl(b.valor)}</b></div>
-      ${b.valorPleno && b.status !== 'pago' ? `
+  const atraso = b.status === 'em_atraso';
+  const semBoleto = b.status === 'agendado' || b.status === 'nao_gerado';
+  const pagavel = b.status === 'em_aberto' && b.linhaDigitavel;
+
+  // o que se deve e por quê
+  let valores;
+  if (b.unico) {
+    valores = `
+      <div class="secao-titulo" style="margin-top:4px">Parcelas neste boleto</div>
+      ${b.unico.parcelas.map((p) => `
         <div class="dado">
-          <span>Valor pleno, se pagar depois ${clausula("4.4")}</span>
-          <b>${brl(b.valorPleno)}</b>
-        </div>` : ''}
-    `}
-    ${b.pagoEm ? `<div class="dado"><span>Pago em</span><b>${dataCurta(b.pagoEm)}</b></div>` : ''}
-    <div class="dado"><span>Descrição</span><b>${escapar(b.descricao)}</b></div>
+          <span>Parcela ${p.parcela}${p.vencida ? ` <small>(vencida · pleno + IPCA + juros até ${dataCurta(b.vencimento)})</small>` : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
+          <b>${brl(p.valor)}</b>
+        </div>`).join('')}
+      ${b.unico.economia > 0 ? `<div class="dado"><span>Desconto de pontualidade mantido ${clausula("4.1")}</span><b class="verde">${brl(b.unico.economia)}</b></div>` : ''}
+      <div class="dado"><span>Total do boleto único</span><b class="destaque-valor">${brl(b.valor)}</b></div>`;
+  } else if (b.encargos) {
+    // já tem 2ª via: a conta é a da data nova
+    valores = composicaoAtraso(b.encargos, 'Total da 2ª via');
+  } else if (atraso && b.encargosHoje) {
+    valores = composicaoAtraso(b.encargosHoje, 'Valor hoje');
+  } else if (b.status === 'pago') {
+    valores = `<div class="dado"><span>Valor pago</span><b class="destaque-valor">${brl(b.valorPago || b.valor)}</b></div>`;
+  } else {
+    valores = `
+      <div class="dado"><span>Pagando até o vencimento</span><b class="destaque-valor">${brl(b.valor)}</b></div>
+      ${b.valorPleno ? `<div class="dado"><span>Valor pleno, se pagar depois ${clausula("4.4")}</span><b>${brl(b.valorPleno)}</b></div>` : ''}`;
+  }
 
-    ${b.linhaDigitavel ? `
+  // o que dá para fazer com ela
+  let acoes = '';
+  if (atraso && !b.unico) {
+    acoes = `
+      <div class="faixa alerta" style="margin-top:14px">
+        <div><b>O boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova — ela
+        já sai com o valor acima atualizado até o dia escolhido.</div>
+      </div>
+      <div class="acoes"><button class="botao" id="segunda-via">Gerar 2ª via</button></div>`;
+  } else if (pagavel) {
+    acoes = `
       <div class="secao-titulo">Linha digitável</div>
       <div class="linha-digitavel" id="linha">${escapar(b.linhaDigitavel)}</div>
       <div class="acoes dupla">
@@ -2667,31 +2881,36 @@ async function abrirBoleto(id) {
       <div class="acoes dupla">
         <button class="botao secundario" id="compartilhar">Compartilhar</button>
         <button class="botao secundario" id="pagar">Pagar no banco</button>
-      </div>
-      ${b.status === 'em_atraso' ? `
-        <div class="faixa alerta" style="margin-top:14px">
-          <div>
-            <b>Boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova —
-            o valor sai com os encargos de atraso já somados.
-          </div>
-        </div>
-        <div class="acoes"><button class="botao" id="segunda-via">Gerar 2ª via</button></div>
-      ` : ''}
-    ` : b.podeEmitir ? `
-      <div class="faixa ouro" style="margin-top:16px">Este boleto ainda não foi emitido — ele sairia automaticamente perto do vencimento. Se quiser adiantar, emita agora.</div>
-      <div class="acoes"><button class="botao" id="emitir">Quero pagar agora</button></div>
-    ` : b.status === 'pago' ? `
-      <div class="faixa info" style="margin-top:16px">Parcela quitada.</div>
-      <div class="acoes"><button class="botao secundario" id="recibo">Baixar recibo desta parcela</button></div>
-    ` : `
-      <div class="faixa info" style="margin-top:16px">Esta parcela ainda não tem boleto. Ele é gerado alguns dias antes do vencimento.</div>
-    `}
+      </div>`;
+  } else if (semBoleto) {
+    // Decisão da equipe: só se paga o que já tem boleto gerado. Para adiantar,
+    // o caminho é o boleto único.
+    acoes = `
+      <div class="faixa info" style="margin-top:16px"><div>O boleto desta parcela ainda não foi gerado —
+      ele fica disponível alguns dias antes do vencimento. Se quiser pagar antes, inclua esta
+      parcela num boleto único.</div></div>
+      <div class="acoes"><button class="botao secundario" id="ir-antecipar">Antecipar parcelas</button></div>`;
+  } else if (b.status === 'pago') {
+    acoes = `
+      <div class="faixa info" style="margin-top:16px">${b.unico ? 'Boleto quitado.' : 'Parcela quitada.'}</div>
+      ${b.unico ? '' : '<div class="acoes"><button class="botao secundario" id="recibo">Baixar recibo desta parcela</button></div>'}`;
+  }
 
-    ${b.status === 'nao_gerado' ? '' : `
+  const comprovantesDaCobranca = (b.comprovantes || []);
+  const corpo = `
+    <h2>${escapar(nomeCobranca(b))}</h2>
+    <div class="sub">${escapar(ROTULO_STATUS[b.status])} · ${atraso ? 'venceu' : b.status === 'pago' ? 'venceu' : 'vence'} em ${dataLonga(b.vencimento)}${b.pagoEm ? ` · pago em ${dataCurta(b.pagoEm)}` : ''}</div>
+
+    ${valores}
+    <div class="dado"><span>Descrição</span><b>${escapar(b.descricao)}</b></div>
+
+    ${acoes}
+
+    ${semBoleto ? '' : `
       <div class="secao-titulo">Comprovante</div>
-      ${(b.comprovantes || []).length ? `
+      ${comprovantesDaCobranca.length ? `
         <div class="lista-comprovantes">
-          ${b.comprovantes.map((c) => `
+          ${comprovantesDaCobranca.map((c) => `
             <div class="comprovante">
               <span class="ico">${ICONES.anexo}</span>
               <div class="quando">
@@ -2701,14 +2920,12 @@ async function abrirBoleto(id) {
               <span class="marca-status s-em_aberto">${c.status === 'em_analise' ? 'Em análise' : escapar(c.status)}</span>
             </div>`).join('')}
         </div>` : `
-        <p class="rodape-nota" style="margin-top:0">
-          Pagou e a parcela ainda não baixou? Anexe o comprovante que a equipe confere.
-        </p>`}
+        <p class="rodape-nota" style="margin-top:0">Pagou e ainda não baixou? Anexe o comprovante que a equipe confere.</p>`}
       <div class="acoes"><button class="botao secundario" id="enviar-comprovante">Enviar comprovante</button></div>
     `}
 
     ${(b.historico || []).length ? `
-      <div class="secao-titulo">O que já aconteceu com esta parcela</div>
+      <div class="secao-titulo">O que já aconteceu ${b.unico ? 'com este boleto' : 'com esta parcela'}</div>
       ${b.historico.map((h) => `
         <div class="historico-item">
           <div class="quando">${dataCurta(h.quando.slice(0, 10))}</div>
@@ -2718,7 +2935,7 @@ async function abrirBoleto(id) {
           </div>
         </div>`).join('')}` : ''}
 
-    ${b.status === 'nao_gerado' ? '' : `
+    ${semBoleto || b.status === 'pago' ? '' : `
       <div class="acoes"><button class="botao fantasma" id="contestar">Não reconheço esta cobrança</button></div>`}
 
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>`;
@@ -2732,17 +2949,7 @@ async function abrirBoleto(id) {
     el.querySelector('#pdf')?.addEventListener('click', () => abrirPdf(id, b));
     el.querySelector('#compartilhar')?.addEventListener('click', () => compartilharBoleto(id, b));
     el.querySelector('#pagar')?.addEventListener('click', () => avisar('No ambiente real, abre o link de pagamento da Vindi'));
-    el.querySelector('#emitir')?.addEventListener('click', async (e) => {
-      e.target.disabled = true; e.target.textContent = 'Emitindo…';
-      try {
-        await chamar(`/financeiro/${id}/emitir`, { method: 'POST' });
-        estado.financeiro = await chamar('/financeiro');
-        fecharFolha();
-        estado.aba === 'inicio' ? abaInicio() : abaFinanceiro();
-        avisar('Boleto emitido');
-        abrirBoleto(id);
-      } catch { avisar('Não foi possível emitir agora'); }
-    });
+    el.querySelector('#ir-antecipar')?.addEventListener('click', simulacaoAntecipacao);
   });
 }
 
@@ -2760,12 +2967,11 @@ async function baixarPdf(id) {
 // do PDF: o visualizador de páginas publicadas não deixa a página iniciar um
 // download. No ambiente local, o botão baixa o PDF de verdade.
 function previaBoleto(d) {
-  const ROT = { pago: 'Pago', em_aberto: 'Em aberto', em_atraso: 'Em atraso', agendado: 'A emitir', nao_gerado: 'Programada' };
   abrirFolha(`
     <div class="boleto-papel">
       <div class="boleto-marca">INDAIÁ EVENTOS · FORMATURAS</div>
-      <div class="boleto-sub">Boleto de parcela do termo de adesão</div>
-      <h2>Parcela ${d.parcela} de ${d.totalParcelas}</h2>
+      <div class="boleto-sub">${d.unico ? 'Boleto único de antecipação' : 'Boleto de parcela do termo de adesão'}</div>
+      <h2>${d.unico ? 'Boleto único' : `Parcela ${d.parcela} de ${d.totalParcelas}`}</h2>
       <div class="sub">${escapar(d.turma)}</div>
       <div class="dado"><span>Formando</span><b>${escapar(semMarca(d.formando))}</b></div>
       <div class="dado"><span>CPF</span><b>${escapar(d.cpf)}</b></div>
@@ -2773,7 +2979,7 @@ function previaBoleto(d) {
       <div class="dado"><span>Descrição</span><b>${escapar(d.descricao)}</b></div>
       <div class="dado"><span>Vencimento</span><b>${dataCurta(d.vencimento)}</b></div>
       <div class="dado"><span>Valor</span><b>${brl(d.valor)}</b></div>
-      <div class="dado"><span>Situação</span><b>${ROT[d.status] || d.status}</b></div>
+      <div class="dado"><span>Situação</span><b>${ROTULO_STATUS[d.status] || d.status}</b></div>
       ${d.pagoEm ? `<div class="dado"><span>Pago em</span><b>${dataCurta(d.pagoEm)}</b></div>` : ''}
       ${d.linhaDigitavel ? `
         <div class="secao-titulo">Linha digitável</div>
@@ -2798,7 +3004,7 @@ async function abrirPdf(id, b) {
     a.href = url;
     a.target = '_blank';
     a.rel = 'noopener';
-    a.download = `parcela-${b.parcela}.pdf`;
+    a.download = `${b.unico ? 'boleto-unico' : `parcela-${b.parcela}`}.pdf`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -2811,18 +3017,18 @@ async function abrirPdf(id, b) {
 // WhatsApp Web.
 async function compartilharBoleto(id, b) {
   const texto = [
-    `Parcela ${b.parcela} · ${escapar(estado.eu?.turma?.rotulo || '')}`.replace(/&[a-z]+;/g, ' '),
+    `${nomeCobranca(b)} · ${escapar(estado.eu?.turma?.rotulo || '')}`.replace(/&[a-z]+;/g, ' '),
     `Vencimento: ${dataCurta(b.vencimento)}`,
-    `Valor: ${brl(b.valor)}`,
+    `Valor: ${brl(devido(b))}`,
     b.linhaDigitavel ? `Linha digitável: ${b.linhaDigitavel}` : '',
   ].filter(Boolean).join('\n');
 
   try {
     if (estado.config?.demo) throw new Error('sem arquivo na demonstração');
     const blob = await baixarPdf(id);
-    const arquivo = new File([blob], `parcela-${b.parcela}.pdf`, { type: 'application/pdf' });
+    const arquivo = new File([blob], `${b.unico ? 'boleto-unico' : `parcela-${b.parcela}`}.pdf`, { type: 'application/pdf' });
     if (navigator.canShare?.({ files: [arquivo] })) {
-      await navigator.share({ title: `Parcela ${b.parcela}`, text: texto, files: [arquivo] });
+      await navigator.share({ title: nomeCobranca(b), text: texto, files: [arquivo] });
       return;
     }
   } catch (err) {
@@ -2830,7 +3036,7 @@ async function compartilharBoleto(id, b) {
   }
 
   try {
-    if (navigator.share) { await navigator.share({ title: `Parcela ${b.parcela}`, text: texto }); return; }
+    if (navigator.share) { await navigator.share({ title: nomeCobranca(b), text: texto }); return; }
   } catch (err) {
     if (err?.name === 'AbortError') return;
   }
@@ -2908,6 +3114,89 @@ async function abrirExtratoPdf() {
   } catch { avisar('Não foi possível abrir o PDF agora'); }
 }
 
+// ---------- meus comprovantes ------------------------------------------------
+// Tudo o que o formando anexou, num lugar só — é o que responde ao "mandei o
+// comprovante e ninguém viu". Daqui também dá para mandar um novo.
+const STATUS_COMPROVANTE = { em_analise: 'Em análise', aceito: 'Conferido', recusado: 'Não conferido' };
+
+async function telaComprovantes() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let r;
+  try { r = await chamar('/comprovantes'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir seus comprovantes agora.</div>'); }
+
+  // só faz sentido mandar comprovante do que tem boleto e ainda não baixou
+  const cobrancas = (estado.financeiro?.boletos || [])
+    .filter((b) => b.status === 'em_aberto' || b.status === 'em_atraso')
+    .sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+
+  abrirFolha(`
+    <h2>Meus <em>comprovantes</em></h2>
+    <div class="sub">Tudo o que você anexou por aqui. O comprovante fica em análise até a equipe conferir e dar a baixa.</div>
+
+    ${r.comprovantes.length ? `
+      <div class="lista-comprovantes">
+        ${r.comprovantes.map((c) => `
+          <button class="comprovante" data-ver="${escapar(c.id)}" ${c.temArquivo ? '' : 'disabled'}>
+            <span class="ico">${ICONES.anexo}</span>
+            <span class="quando">
+              <strong>${escapar(c.arquivo)}</strong>
+              <span>${escapar(c.cobranca)} · enviado em ${dataCurta(c.enviadoEm.slice(0, 10))} · ${Math.max(1, Math.round(c.tamanho / 1024))} KB</span>
+              ${c.protocolo ? `<br><span class="protocolo">${escapar(c.protocolo)}</span>` : ''}
+            </span>
+            <span class="marca-status s-em_aberto">${STATUS_COMPROVANTE[c.status] || escapar(c.status)}</span>
+          </button>`).join('')}
+      </div>` : '<div class="cartao plano"><div class="vazio">Você ainda não enviou nenhum comprovante.</div></div>'}
+
+    ${cobrancas.length ? `
+      <div class="secao-titulo">Enviar um novo</div>
+      <div class="campo">
+        <label for="qual-cobranca">De qual cobrança</label>
+        <select id="qual-cobranca">
+          ${cobrancas.map((b) => `<option value="${escapar(b.id)}">${escapar(nomeCobranca(b))} · ${brl(devido(b))} · vence ${dataCurta(b.vencimento)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="acoes"><button class="botao" id="novo-comprovante">Anexar comprovante</button></div>` : ''}
+
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `, (el) => {
+    el.querySelectorAll('[data-ver]').forEach((b) => b.addEventListener('click', () => verComprovante(b.dataset.ver)));
+    el.querySelector('#novo-comprovante')?.addEventListener('click', async () => {
+      const id = el.querySelector('#qual-cobranca').value;
+      try { formularioComprovante(id, await chamar(`/financeiro/${id}`), null, 'comprovantes'); }
+      catch { avisar('Não foi possível abrir esta cobrança'); }
+    });
+  });
+}
+
+// Imagem abre na própria folha; PDF abre numa aba nova.
+async function verComprovante(id) {
+  let c;
+  try { c = await chamar(`/comprovantes/${id}`); }
+  catch { return avisar('Não foi possível abrir o comprovante'); }
+  if (!c.conteudo) return avisar('O arquivo deste comprovante não está disponível');
+
+  if (c.tipo.startsWith('image/')) {
+    return abrirFolha(`
+      <h2>${escapar(c.arquivo)}</h2>
+      <img class="previa-comprovante" style="max-height:66vh" src="${escapar(c.conteudo)}" alt="Comprovante enviado" />
+      <div class="acoes dupla">
+        <button class="botao secundario" id="voltar-comprovantes">Voltar aos comprovantes</button>
+        <button class="botao fantasma" data-fechar-folha>Fechar</button>
+      </div>
+    `, (el) => el.querySelector('#voltar-comprovantes').addEventListener('click', telaComprovantes));
+  }
+
+  // data URL → blob, para o navegador abrir o PDF (ele não abre data: numa aba)
+  const [cabeca, base64] = c.conteudo.split(',');
+  const bytes = Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: cabeca.match(/data:([^;]+)/)?.[1] || c.tipo }));
+  const a = document.createElement('a');
+  a.href = url; a.target = '_blank'; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 // ---------- meus pedidos -----------------------------------------------------
 // Todo pedido tem protocolo, data e prazo. É o que responde ao "abri e ninguém
 // me deu retorno".
@@ -2946,7 +3235,9 @@ async function telaMeusPedidos() {
 
 // ---------- 2ª via de parcela vencida ----------------------------------------
 // Boleto vencido o banco recusa. Aqui o formando escolhe a data nova e vê o
-// valor com multa e juros antes de gerar.
+// valor de cada data antes de gerar. A prévia vem do servidor
+// (/segunda-via/simular), com a mesma conta da 2ª via — por isso o valor que
+// aparece na escolha é o valor do boleto.
 function formularioSegundaVia(id, boleto, erro) {
   const hojeD = new Date(`${hoje()}T12:00:00`);
   const opcoes = [2, 5, 10].map((dias) => {
@@ -2956,14 +3247,14 @@ function formularioSegundaVia(id, boleto, erro) {
   const atraso = Math.abs(diasAte(boleto.vencimento));
 
   abrirFolha(`
-    <h2>2ª via da <em>parcela ${boleto.parcela}</em></h2>
+    <h2>2ª via da <em>${escapar(nomeCobranca(boleto).toLowerCase())}</em></h2>
     <div class="sub">Venceu em ${dataCurta(boleto.vencimento)} · ${atraso} dia${atraso === 1 ? '' : 's'} de atraso</div>
 
-    <div class="dado"><span>Com pontualidade</span><b>${brl(boleto.valor)}</b></div>
+    <div class="dado"><span>Com pontualidade, se tivesse pago em dia</span><b>${brl(boleto.valor)}</b></div>
     <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
     <div class="faixa info" style="margin-top:14px">
-      <div>A parcela não paga no vencimento passa a valer o preço pleno, com os encargos de atraso
-      previstos no termo. O desconto de pontualidade vale só para quem paga até a data ${clausula("4.2")}.</div>
+      <div>Depois do vencimento a parcela passa a valer o pleno, corrigido pelo IPCA e com juros de
+      mora de 1% ao mês até a data que você escolher ${clausula("4.3")}.</div>
     </div>
 
     <div class="secao-titulo">Nova data de vencimento</div>
@@ -2974,20 +3265,25 @@ function formularioSegundaVia(id, boleto, erro) {
             <strong>${dataCurta(o.iso)}</strong>
             <span>daqui a ${o.dias} dia${o.dias === 1 ? '' : 's'}</span>
           </div>
-          <div class="quanto"><b id="v-${o.iso}">—</b></div>
+          <div class="quanto"><b id="v-${o.iso}">calculando…</b><span class="economia" id="d-${o.iso}"></span></div>
         </button>`).join('')}
     </div>
     ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
-    <p class="rodape-nota">A prévia é aproximada; o valor exato sai na 2ª via. Se você já pagou esta
-    parcela, envie o comprovante em vez de gerar a 2ª via.</p>
+    <p class="rodape-nota">A correção usa os meses de IPCA já publicados pelo IBGE. Se você já pagou
+    esta parcela, envie o comprovante em vez de gerar a 2ª via.</p>
     <div class="acoes"><button class="botao fantasma" id="voltar-boleto">Voltar</button></div>
   `, (el) => {
-    // preenche a prévia de cada data
+    // a prévia de cada data, pela mesma conta da 2ª via
     for (const o of opcoes) {
-      const dias = Math.max(0, Math.round((new Date(`${o.iso}T12:00:00`) - new Date(`${boleto.vencimento}T12:00:00`)) / 86400000));
-      const pleno = boleto.valorPleno || boleto.valor;
-      const total = pleno + pleno * 0.01 * (dias / 30);
-      el.querySelector(`#v-${o.iso}`).textContent = brl(Math.round(total * 100) / 100);
+      chamar(`/financeiro/${id}/segunda-via/simular`, { method: 'POST', body: JSON.stringify({ novoVencimento: o.iso }) })
+        .then((e) => {
+          const valor = el.querySelector(`#v-${o.iso}`);
+          const detalhe = el.querySelector(`#d-${o.iso}`);
+          if (!valor) return;   // a folha já mudou
+          valor.textContent = brl(e.total);
+          detalhe.textContent = `IPCA + ${brl(e.correcaoIpca)} · juros + ${brl(e.juros)}`;
+        })
+        .catch(() => { const v = el.querySelector(`#v-${o.iso}`); if (v) v.textContent = '—'; });
     }
 
     el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id));
@@ -3025,7 +3321,7 @@ function formularioContestacao(id, boleto) {
   ];
   abrirFolha(`
     <h2>Contestar <em>cobrança</em></h2>
-    <div class="sub">Parcela ${boleto.parcela} · ${brl(boleto.valor)} · vence em ${dataCurta(boleto.vencimento)}</div>
+    <div class="sub">${escapar(nomeCobranca(boleto))} · ${brl(devido(boleto))} · vence em ${dataCurta(boleto.vencimento)}</div>
 
     <div class="campo">
       <label for="motivo">Motivo</label>
@@ -3051,7 +3347,7 @@ function formularioContestacao(id, boleto) {
           body: JSON.stringify({
             tipo: 'contestacao',
             billId: boleto.id,
-            mensagem: `Parcela ${boleto.parcela} · ${el.querySelector('#motivo').value}. ${el.querySelector('#detalhe').value}`.trim(),
+            mensagem: `${nomeCobranca(boleto)} · ${el.querySelector('#motivo').value}. ${el.querySelector('#detalhe').value}`.trim(),
           }),
         });
         fecharFolha();
@@ -3124,10 +3420,13 @@ function simulacaoRenegociacao() {
 const TIPOS_COMPROVANTE = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 const LIMITE_COMPROVANTE = 8 * 1024 * 1024;
 
-function formularioComprovante(id, boleto, erro) {
+// `origem` diz para onde voltar: o detalhe da parcela (padrão) ou a área de
+// comprovantes.
+function formularioComprovante(id, boleto, erro, origem) {
+  const voltar = () => (origem === 'comprovantes' ? telaComprovantes() : abrirBoleto(id));
   abrirFolha(`
     <h2>Enviar <em>comprovante</em></h2>
-    <div class="sub">Parcela ${boleto.parcela} · ${brl(boleto.valor)} · vence em ${dataCurta(boleto.vencimento)}</div>
+    <div class="sub">${escapar(nomeCobranca(boleto))} · ${brl(devido(boleto))} · vence em ${dataCurta(boleto.vencimento)}</div>
 
     <div class="campo">
       <label for="arquivo">Comprovante</label>
@@ -3172,7 +3471,7 @@ function formularioComprovante(id, boleto, erro) {
       }
     });
 
-    el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id));
+    el.querySelector('#voltar-boleto').addEventListener('click', voltar);
 
     botao.addEventListener('click', async () => {
       if (!escolhido) return;
@@ -3195,13 +3494,16 @@ function formularioComprovante(id, boleto, erro) {
           }),
         });
         avisar('Comprovante enviado. A equipe confere e dá a baixa.');
-        abrirBoleto(id);
+        // a lista atrás da folha ganha o selo "Comprovante enviado"
+        estado.financeiro = await chamar('/financeiro').catch(() => estado.financeiro);
+        if (estado.aba === 'financeiro') abaFinanceiro();
+        voltar();
       } catch (err) {
         const mensagens = {
           tipo_nao_aceito: 'Aceita foto (JPG, PNG, WebP) ou PDF.',
           arquivo_grande: 'Arquivo maior que 8 MB.',
         };
-        formularioComprovante(id, boleto, mensagens[err.message] || 'Não foi possível enviar agora.');
+        formularioComprovante(id, boleto, mensagens[err.message] || 'Não foi possível enviar agora.', origem);
       }
     });
   });
@@ -3750,7 +4052,7 @@ const PERGUNTAS = [
   { p: 'Perdi o boleto, e agora?', r: 'Nada se perde por aqui: a parcela sempre mostra a linha digitável e o PDF. Se já venceu, o botão de 2ª via gera um boleto novo com data nova.' },
   { p: 'Paguei e a parcela continua em aberto', r: 'A baixa do banco pode levar até 3 dias úteis. Se passou disso, anexe o comprovante na própria parcela — a equipe confere e dá a baixa.' },
   { p: 'Por que a parcela em atraso tem valor diferente?', r: 'O valor da parcela é o valor pleno com 20% de desconto por pagar até o vencimento. Pagando depois, o desconto não vale e entram correção pelo IPCA e juros de 1% ao mês.', c: '4.3' },
-  { p: 'Posso adiantar ou quitar tudo?', r: 'Pode. Em Financeiro, a opção "Antecipar" mostra a soma das próximas parcelas e do contrato inteiro mantendo o desconto de pontualidade. A equipe confirma antes de emitir.' },
+  { p: 'Posso adiantar ou quitar tudo?', r: 'Pode. Em Financeiro, a opção "Antecipar" mostra a soma das próximas parcelas e do contrato inteiro mantendo o desconto de pontualidade. Escolhida a opção, o boleto único sai na hora.' },
   { p: 'Posso mudar a data de vencimento?', r: 'A reprogramação da forma de pagamento é combinada com a equipe e tem taxa fixa de R$ 75,00 prevista no termo.', c: '17.3' },
   { p: 'O que acontece se eu atrasar?', r: 'Enquanto houver parcela em aberto, a participação em eventos, ensaios e a retirada de convites ficam suspensas até regularizar.', c: '8.1' },
   { p: 'Como peço convites extras?', r: 'Na aba Contrato, em "Seus convites". O pedido vai para a equipe, que confere disponibilidade e faz o aditivo. Nada é cobrado automaticamente.' },
