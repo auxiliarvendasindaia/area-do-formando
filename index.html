@@ -2384,7 +2384,7 @@ const FILTROS = [
 ];
 
 function abaFinanceiro() {
-  const { resumo, boletos, reajuste } = estado.financeiro;
+  const { resumo, boletos } = estado.financeiro;
   const pct = resumo.contratado ? Math.min(100, (resumo.pago / resumo.contratado) * 100) : 0;
   const filtro = FILTROS.find((f) => f.id === estado.filtro) || FILTROS[0];
   const lista = boletos.filter(filtro.teste).sort((a, b) => (filtro.id === 'pagas' ? -1 : 1) * a.vencimento.localeCompare(b.vencimento));
@@ -2464,8 +2464,6 @@ function abaFinanceiro() {
       </button>
     </div>
 
-    ${reajuste && !reajuste.aplicado ? `<div class="faixa ouro">Reajuste ${escapar(reajuste.indice)} programado para ${mesAno(reajuste.proximoCiclo)}. A parcela passa de ${brl(reajuste.valorAtual)} para cerca de ${brl(reajuste.valorEstimado)} — o valor final sai quando o índice for publicado.</div>` : ''}
-
     <div class="secao-titulo">Minhas parcelas</div>
     <div class="filtros">
       ${FILTROS.map((f) => {
@@ -2543,12 +2541,10 @@ function simulacaoAntecipacao() {
     <h2>Antecipar ou <em>quitar</em></h2>
     <div class="sub">Pagar adiantado mantém o desconto de pontualidade ${clausula("4.1")} em todas as parcelas do lote.</div>
 
-    ${vencidas.length ? `<div class="faixa alerta">${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'} pelo valor pleno, com juros de mora — o desconto de pontualidade só vale para o que ainda não venceu ${clausula("4.3")}.</div>` : ''}
+    ${vencidas.length ? `<div class="faixa alerta">${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'} pelo valor pleno, com juros de mora — o desconto de pontualidade só vale para o que ainda não venceu ${clausula("4.2")}.</div>` : ''}
 
     <div class="lista-antecipa">${opcoes.map(linha).join('')}</div>
 
-    <p class="rodape-nota">Simulação pela régua do contrato: o termo não prevê desconto extra por
-    antecipação. A equipe confere e confirma o valor antes de emitir o boleto único.</p>
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
   `, (el) => {
     el.querySelectorAll('[data-opcao]').forEach((b) => b.addEventListener('click', () => {
@@ -2647,14 +2643,8 @@ async function abrirBoleto(id) {
     <h2>Parcela ${b.parcela}</h2>
     <div class="sub">${escapar(ROTULO_STATUS[b.status])} · vence em ${dataLonga(b.vencimento)}</div>
     ${b.encargos ? `
-      <div class="dado"><span>Valor pleno ${clausula("4.3")}</span><b>${brl(b.encargos.valorPleno)}</b></div>
-      <div class="dado">
-        <span>Correção IPCA ${b.encargos.ipcaMeses ? `<small>(${b.encargos.ipcaMeses} ${b.encargos.ipcaMeses === 1 ? 'mês' : 'meses'}, IBGE)</small>` : ''}</span>
-        <b>${b.encargos.ipcaDisponivel
-          ? (b.encargos.correcaoIpca ? `+ ${brl(b.encargos.correcaoIpca)}` : 'sem índice fechado no período')
-          : 'não foi possível consultar o IBGE'}</b>
-      </div>
-      <div class="dado"><span>Juros de mora <small>(1% ao mês, ${b.encargos.diasAtraso} dias)</small></span><b>+ ${brl(b.encargos.juros)}</b></div>
+      <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(b.encargos.valorPleno)}</b></div>
+      <div class="dado"><span>Encargos de atraso <small>(${b.encargos.diasAtraso} dias)</small></span><b>+ ${brl(Math.round((b.encargos.correcaoIpca + b.encargos.juros) * 100) / 100)}</b></div>
       <div class="dado"><span>Total da 2ª via</span><b class="destaque-valor">${brl(b.valorAtualizado)}</b></div>
     ` : `
       <div class="dado"><span>Pagando até o vencimento</span><b class="destaque-valor">${brl(b.valor)}</b></div>
@@ -2682,7 +2672,7 @@ async function abrirBoleto(id) {
         <div class="faixa alerta" style="margin-top:14px">
           <div>
             <b>Boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova —
-            o valor sai com multa e juros já somados.
+            o valor sai com os encargos de atraso já somados.
           </div>
         </div>
         <div class="acoes"><button class="botao" id="segunda-via">Gerar 2ª via</button></div>
@@ -2856,7 +2846,6 @@ async function telaExtrato() {
   try { e = await chamar('/extrato'); }
   catch { return abrirFolha('<div class="vazio">Não foi possível montar o extrato agora.</div>'); }
 
-  const r = e.reajusteProgramado;
   abrirFolha(`
     <h2>Extrato de <em>pagamentos</em></h2>
     <div class="sub">Emitido em ${dataCurta(e.emitidoEm.slice(0, 10))}</div>
@@ -2866,13 +2855,7 @@ async function telaExtrato() {
     <div class="dado"><span>Parcelas pagas</span><b>${e.totais.parcelasPagas} de ${e.contrato.parcelas}</b></div>
     <div class="dado"><span>Total pago</span><b class="verde">${brl(e.totais.pago)}</b></div>
     <div class="dado"><span>Em aberto</span><b>${brl(e.totais.emAberto)}</b></div>
-
-    <div class="secao-titulo">Como o valor da parcela é formado</div>
     <div class="dado"><span>Parcela contratada</span><b>${brl(e.contrato.mensalidade)}</b></div>
-    ${e.reajustes.length
-      ? e.reajustes.map((aj) => `<div class="dado"><span>${escapar(aj.indice)} em ${mesAno(aj.data)}</span><b>${brl(aj.de)} → ${brl(aj.para)}</b></div>`).join('')
-      : '<div class="dado"><span>Reajustes aplicados</span><b>nenhum até agora</b></div>'}
-    ${r ? `<div class="dado"><span>Próximo ciclo (${escapar(r.indice)})</span><b>${mesAno(r.proximoCiclo)} · cerca de ${brl(r.valorEstimado)}</b></div>` : ''}
 
     <div class="secao-titulo">Pagamentos</div>
     ${e.pagamentos.length ? `
@@ -2979,9 +2962,8 @@ function formularioSegundaVia(id, boleto, erro) {
     <div class="dado"><span>Com pontualidade</span><b>${brl(boleto.valor)}</b></div>
     <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
     <div class="faixa info" style="margin-top:14px">
-      <div>Pela <b>cláusula 4.3</b> ${clausula("4.3", "")}, a parcela não paga no vencimento passa a valer o preço pleno,
-      com correção pelo IPCA e juros de mora de 1% ao mês. O desconto de pontualidade vale só para
-      quem paga até a data.</div>
+      <div>A parcela não paga no vencimento passa a valer o preço pleno, com os encargos de atraso
+      previstos no termo. O desconto de pontualidade vale só para quem paga até a data ${clausula("4.2")}.</div>
     </div>
 
     <div class="secao-titulo">Nova data de vencimento</div>
@@ -2996,9 +2978,8 @@ function formularioSegundaVia(id, boleto, erro) {
         </button>`).join('')}
     </div>
     ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
-    <p class="rodape-nota">A prévia mostra valor pleno e juros; a correção pelo IPCA (série do IBGE)
-    entra no valor final da 2ª via. Se você já pagou esta parcela, envie o comprovante em vez de gerar
-    a 2ª via.</p>
+    <p class="rodape-nota">A prévia é aproximada; o valor exato sai na 2ª via. Se você já pagou esta
+    parcela, envie o comprovante em vez de gerar a 2ª via.</p>
     <div class="acoes"><button class="botao fantasma" id="voltar-boleto">Voltar</button></div>
   `, (el) => {
     // preenche a prévia de cada data
@@ -3100,7 +3081,7 @@ function simulacaoRenegociacao() {
     <div class="sub">${vencidas.length} parcela${vencidas.length > 1 ? 's' : ''} vencida${vencidas.length > 1 ? 's' : ''}</div>
 
     <div class="dado"><span>Soma com pontualidade</span><b>${brl(comPontualidade)}</b></div>
-    <div class="dado"><span>Valor pleno ${clausula("4.3")}</span><b>${brl(pleno)}</b></div>
+    <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(pleno)}</b></div>
     <div class="dado"><span>Taxa de reprogramação ${clausula("17.3")}</span><b>${brl(taxa)}</b></div>
 
     <div class="secao-titulo">Em quantas vezes</div>
@@ -3109,15 +3090,15 @@ function simulacaoRenegociacao() {
         <button class="opcao-antecipa" data-plano="${p.n}">
           <div class="quando">
             <strong>${p.n}× de ${brl(p.parcela)}</strong>
-            <span>valor pleno + taxa, sem a correção do IPCA</span>
+            <span>valor pleno + taxa de reprogramação</span>
           </div>
           <div class="quanto"><b>${brl(pleno + taxa)}</b><span class="economia">total</span></div>
         </button>`).join('')}
     </div>
 
     <p class="rodape-nota">Proposta, não acordo fechado: o contrato não fixa entrada nem número de
-    parcelas para a reprogramação. A equipe confere, aplica a correção do IPCA do período e
-    confirma as datas antes de emitir os boletos.</p>
+    parcelas para a reprogramação. A equipe confere os valores e confirma as datas antes de emitir
+    os boletos.</p>
     <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
   `, (el) => {
     el.querySelectorAll('[data-plano]').forEach((b) => b.addEventListener('click', async () => {
@@ -3128,7 +3109,7 @@ function simulacaoRenegociacao() {
           body: JSON.stringify({
             tipo: 'renegociacao',
             quantidade: Number(b.dataset.plano),
-            mensagem: `${vencidas.length} parcela(s) vencida(s). Proposta: ${b.dataset.plano}× de ${brl((pleno + taxa) / Number(b.dataset.plano))} (valor pleno ${brl(pleno)} + taxa ${brl(taxa)}, sem IPCA).`,
+            mensagem: `${vencidas.length} parcela(s) vencida(s). Proposta: ${b.dataset.plano}× de ${brl((pleno + taxa) / Number(b.dataset.plano))} (valor pleno ${brl(pleno)} + taxa ${brl(taxa)}).`,
           }),
         });
         fecharFolha();
@@ -3768,7 +3749,7 @@ const PERGUNTAS = [
   { p: 'Como eu pago a parcela?', r: 'Pelo boleto: abra a parcela, copie a linha digitável ou baixe o PDF e pague pelo aplicativo do seu banco. Não trabalhamos com Pix.' },
   { p: 'Perdi o boleto, e agora?', r: 'Nada se perde por aqui: a parcela sempre mostra a linha digitável e o PDF. Se já venceu, o botão de 2ª via gera um boleto novo com data nova.' },
   { p: 'Paguei e a parcela continua em aberto', r: 'A baixa do banco pode levar até 3 dias úteis. Se passou disso, anexe o comprovante na própria parcela — a equipe confere e dá a baixa.' },
-  { p: 'Por que a fatura tem valor diferente?', r: 'O valor da parcela é o valor pleno com 20% de desconto por pagar até o vencimento. Pagando depois, o desconto não vale e entram correção pelo IPCA e juros de 1% ao mês.', c: '4.3' },
+  { p: 'Por que a parcela em atraso tem valor diferente?', r: 'O valor da parcela é o valor pleno com 20% de desconto por pagar até o vencimento. Pagando depois, o desconto não vale e entram correção pelo IPCA e juros de 1% ao mês.', c: '4.3' },
   { p: 'Posso adiantar ou quitar tudo?', r: 'Pode. Em Financeiro, a opção "Antecipar" mostra a soma das próximas parcelas e do contrato inteiro mantendo o desconto de pontualidade. A equipe confirma antes de emitir.' },
   { p: 'Posso mudar a data de vencimento?', r: 'A reprogramação da forma de pagamento é combinada com a equipe e tem taxa fixa de R$ 75,00 prevista no termo.', c: '17.3' },
   { p: 'O que acontece se eu atrasar?', r: 'Enquanto houver parcela em aberto, a participação em eventos, ensaios e a retirada de convites ficam suspensas até regularizar.', c: '8.1' },
