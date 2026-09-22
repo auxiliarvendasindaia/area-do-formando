@@ -950,6 +950,26 @@ button.comprovante:hover:not([disabled]) { border-color: var(--violet); }
 button.comprovante[disabled] { cursor: default; }
 .comprovante .quando .protocolo { margin-top: 4px; }
 
+/* ==========================================================================
+   Seletor de visão da lista de parcelas: lista corrida, por mês ou por ano
+   ========================================================================== */
+.titulo-linha {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin: 30px 2px 12px;
+}
+.visao {
+  display: flex; gap: 4px; padding: 3px;
+  border: 1px solid var(--linha); border-radius: 99px; background: var(--superficie);
+}
+.visao button {
+  min-height: 38px; padding: 6px 16px; border: 0; border-radius: 99px; cursor: pointer;
+  background: none; color: var(--texto-suave);
+  font-size: .66rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+}
+.visao button:hover { color: var(--texto); }
+.visao button.ativo { background: var(--violet); color: #fff; }
+.grupo-ano summary .ano.mes { font-size: 19px; }
+
 </style>
 </head>
 <body>
@@ -1887,6 +1907,7 @@ const estado = {
   avisos: null,
   aba: 'inicio',
   filtro: 'todas',
+  visao: 'ano',
   menuAberto: false,
 };
 
@@ -2430,7 +2451,7 @@ function itemBoleto(b) {
   return `
     <button class="item" data-boleto="${escapar(b.id)}">
       <div class="quando">
-        <strong>${escapar(nomeCobranca(b))} · ${mesAno(b.vencimento)}</strong>
+        <strong>${escapar(nomeCobranca(b))}${estado.visao === 'mes' ? '' : ` · ${mesAno(b.vencimento)}`}</strong>
         <span>${quando}</span>
         <br><span class="marca-status s-${b.status}">${ROTULO_STATUS[b.status]}</span>
         ${b.unicoAtivo ? '<span class="marca-status s-no_unico">No boleto único</span>' : ''}
@@ -2650,7 +2671,12 @@ function abaFinanceiro() {
       <div class="secao-titulo">Boleto único</div>
       <div class="lista" style="margin-bottom:14px">${unicos.map(itemBoleto).join('')}</div>` : ''}
 
-    <div class="secao-titulo">Minhas parcelas</div>
+    <div class="titulo-linha">
+      <div class="secao-titulo" style="margin:0">Minhas parcelas</div>
+      <div class="visao">
+        ${VISOES.map((v) => `<button data-visao="${v.id}" class="${v.id === estado.visao ? 'ativo' : ''}">${v.rotulo}</button>`).join('')}
+      </div>
+    </div>
     <div class="filtros">
       ${FILTROS.map((f) => {
         const n = parcelas.filter(f.teste).length;
@@ -2659,7 +2685,7 @@ function abaFinanceiro() {
         return `<button data-filtro="${f.id}" class="${f.id === estado.filtro ? 'ativo' : ''}"><i class="ponto p-${f.id}"></i>${f.rotulo} · ${n}</button>`;
       }).join('')}
     </div>
-    ${lista.length ? listaPorAno(lista)
+    ${lista.length ? agruparParcelas(lista)
       : '<div class="cartao plano"><div class="vazio">Nenhuma parcela nesta situação.</div></div>'}
 
     <p class="rodape-nota">As parcelas <b>programadas</b> ainda não têm boleto — ele é gerado alguns dias antes do vencimento. Para pagar antes, use <b>Antecipar ou quitar</b>: o boleto único sai na hora.</p>
@@ -2667,6 +2693,7 @@ function abaFinanceiro() {
   `, `${resumo.parcelasPagas} de ${resumo.parcelas} parcelas pagas`);
 
   app.querySelectorAll('[data-filtro]').forEach((b) => b.addEventListener('click', () => { estado.filtro = b.dataset.filtro; abaFinanceiro(); }));
+  app.querySelectorAll('[data-visao]').forEach((b) => b.addEventListener('click', () => { guardarVisao(b.dataset.visao); abaFinanceiro(); }));
   app.querySelector('#antecipar')?.addEventListener('click', simulacaoAntecipacao);
   app.querySelector('#negociar')?.addEventListener('click', formularioNegociacao);
   app.querySelector('#ver-extrato')?.addEventListener('click', telaExtrato);
@@ -2791,8 +2818,53 @@ function confirmarAntecipacao(opcao, sim) {
   });
 }
 
-// Com 30+ parcelas a lista vira um paredão: agrupa por ano, como a Área do
-// Cliente faz por mês. Abre o ano corrente e o que tiver parcela em atraso.
+// Como a lista é mostrada: corrida, agrupada por mês ou por ano. A escolha fica
+// no navegador, como o tema.
+const VISOES = [
+  { id: 'lista', rotulo: 'Lista' },
+  { id: 'mes', rotulo: 'Mês' },
+  { id: 'ano', rotulo: 'Ano' },
+];
+
+const visaoGuardada = () => {
+  try {
+    const salva = localStorage.getItem('formando_visao');
+    if (VISOES.some((v) => v.id === salva)) return salva;
+  } catch { /* modo privado */ }
+  return 'ano';
+};
+
+function guardarVisao(v) {
+  estado.visao = v;
+  try { localStorage.setItem('formando_visao', v); } catch { /* segue sem lembrar */ }
+}
+
+const agruparParcelas = (lista) => (estado.visao === 'lista'
+  ? `<div class="lista">${lista.map(itemBoleto).join('')}</div>`
+  : estado.visao === 'mes' ? listaPorMes(lista) : listaPorAno(lista));
+
+// Por mês: abre o mês corrente e todo mês com parcela vencida.
+function listaPorMes(boletos) {
+  const meses = [...new Set(boletos.map((b) => b.vencimento.slice(0, 7)))];
+  const mesCorrente = hoje().slice(0, 7);
+  return meses.map((mes) => {
+    const doMes = boletos.filter((b) => b.vencimento.startsWith(mes));
+    const total = doMes.reduce((a, b) => a + devido(b), 0);
+    const atrasadas = doMes.filter((b) => b.status === 'em_atraso').length;
+    return `
+      <details class="grupo-ano" ${mes === mesCorrente || atrasadas ? 'open' : ''}>
+        <summary>
+          <span class="ano mes">${maiuscula(mesAno(`${mes}-01`))}</span>
+          <span class="qtd">${doMes.length} parcela${doMes.length === 1 ? '' : 's'}${atrasadas ? ` · <b class="atrasada">${atrasadas} em atraso</b>` : ''}</span>
+          <span class="soma">${brl(total)}</span>
+        </summary>
+        <div class="lista">${doMes.map(itemBoleto).join('')}</div>
+      </details>`;
+  }).join('');
+}
+
+// Com 30+ parcelas a lista vira um paredão: agrupa por ano e abre o ano
+// corrente e o que tiver parcela em atraso.
 function listaPorAno(boletos) {
   const anos = [...new Set(boletos.map((b) => b.vencimento.slice(0, 4)))];
   if (anos.length === 1) return corpoDoAno(boletos);
@@ -4317,6 +4389,7 @@ function sair() {
 
 (async function iniciar() {
   aplicarTema(temaAtual());
+  estado.visao = visaoGuardada();
   try { estado.config = await chamar('/config'); } catch { /* segue sem config */ }
   const guardado = recuperar();
   if (guardado) {
