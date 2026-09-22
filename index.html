@@ -331,7 +331,9 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
 .item:hover { background: var(--superficie-2); }
 .item .quando { flex: 1; min-width: 0; }
 .item .quando strong { display: block; font-family: var(--sans); font-size: 15.5px; font-weight: 600; line-height: 1.3; letter-spacing: .005em; }
-.item .quando span { font-size: 13px; color: var(--texto-suave); }
+/* o texto de apoio da linha; os selos têm a cor deles e não entram aqui */
+.item .quando span:not(.marca-status):not(.protocolo) { font-size: 13px; color: var(--texto-suave); }
+.item .quando .marca-status { font-size: 13px; }   /* o tamanho que os selos da lista sempre tiveram */
 .item .quanto { text-align: right; white-space: nowrap; }
 .item .quanto b { display: block; font-variant-numeric: tabular-nums lining-nums; font-size: 16px; }
 .item .seta { color: var(--texto-suave); font-size: 18px; line-height: 1; }
@@ -342,7 +344,9 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
 .s-pago { background: transparent; padding-left: 0; color: var(--positivo); opacity: .9; }
 .s-pago::before { content: "✓ "; font-weight: 700; }
 .s-em_aberto { background: rgba(123, 78, 194, .14); color: var(--accent-txt); }
-.s-em_atraso { background: rgba(163, 66, 60, .14); color: var(--negativo); }
+/* "em atraso" puxa mais para o vermelho que os outros selos, sem gritar */
+.s-em_atraso { background: rgba(214, 64, 52, .24); color: #F6A59C; }
+:root[data-tema="claro"] .faixa-central .s-em_atraso { background: rgba(200, 48, 38, .14); color: #B3261E; }
 .s-agendado { background: rgba(201, 162, 75, .18); color: var(--dourado-txt); }
 .s-nao_gerado { background: var(--superficie-2); color: var(--texto-suave); }
 @media (prefers-color-scheme: dark) { :root:not([data-tema="claro"]) .s-em_aberto { color: var(--violet-soft); } }
@@ -2846,7 +2850,9 @@ function composicaoAtraso(e, rotuloTotal) {
     ${clausula("4.3")}.</p>`;
 }
 
-async function abrirBoleto(id) {
+// \`individual\`: a pessoa já disse que quer pagar esta parcela sozinha, mesmo ela
+// estando num boleto único.
+async function abrirBoleto(id, { individual = false } = {}) {
   abrirFolha('<div class="vazio">Carregando…</div>');
   let b;
   try { b = await chamar(`/financeiro/${id}`); }
@@ -2855,6 +2861,11 @@ async function abrirBoleto(id) {
   const atraso = b.status === 'em_atraso';
   const semBoleto = b.status === 'agendado' || b.status === 'nao_gerado';
   const pagavel = b.status === 'em_aberto' && b.linhaDigitavel;
+  // Não dá para impedir o pagamento de um boleto que já existe (ele pode estar
+  // salvo, impresso ou no app do banco). O que dá é segurar a linha digitável
+  // e a 2ª via desta parcela atrás de um aviso quando ela está num boleto único.
+  const noUnicoPagavel = Boolean(b.unicoAtivo) && (b.status === 'em_aberto' || atraso);
+  const segurarIndividual = noUnicoPagavel && !individual;
 
   // o que se deve e por quê
   let valores;
@@ -2931,12 +2942,21 @@ async function abrirBoleto(id) {
     ${valores}
     <div class="dado"><span>Descrição</span><b>${escapar(b.descricao)}</b></div>
 
-    ${b.unicoAtivo ? `
-      <div class="faixa info" style="margin-top:16px"><div>Esta parcela também está num <b>boleto único</b> que vence
-      em ${dataCurta(b.unicoAtivo.vencimento)}. Pague só um dos dois: pagando o boleto único, ela é quitada junto.</div></div>
+    ${segurarIndividual ? `
+      <div class="faixa ouro" style="margin-top:16px"><div><b>Esta parcela já está num boleto único</b> que vence em
+      ${dataCurta(b.unicoAtivo.vencimento)}. Pague só um dos dois — pagando o boleto único, ela é quitada junto.
+      Se pagar esta parcela sozinha, não pague mais o boleto único.</div></div>
+      <div class="acoes dupla">
+        <button class="botao" id="ver-unico">Pagar pelo boleto único</button>
+        <button class="botao secundario" id="so-esta">Pagar só esta parcela</button>
+      </div>` : b.unicoAtivo ? `
+      <div class="faixa ouro" style="margin-top:16px"><div>Você escolheu pagar só esta parcela. Ela continua no
+      boleto único de ${dataCurta(b.unicoAtivo.vencimento)}: <b>não pague os dois</b>.</div></div>` : b.unicoAtivo && !noUnicoPagavel ? `
+      <div class="faixa info" style="margin-top:16px"><div>Esta parcela está no boleto único que vence em
+      ${dataCurta(b.unicoAtivo.vencimento)}. Pagando ele, ela é quitada junto.</div></div>
       <div class="acoes"><button class="botao secundario" id="ver-unico">Ver o boleto único</button></div>` : ''}
 
-    ${acoes}
+    ${segurarIndividual || (b.unicoAtivo && !noUnicoPagavel) ? '' : acoes}
 
     ${semBoleto ? '' : `
       <div class="secao-titulo">Comprovante</div>
@@ -2983,6 +3003,7 @@ async function abrirBoleto(id) {
     el.querySelector('#pagar')?.addEventListener('click', () => avisar('No ambiente real, abre o link de pagamento da Vindi'));
     el.querySelector('#ir-antecipar')?.addEventListener('click', simulacaoAntecipacao);
     el.querySelector('#ver-unico')?.addEventListener('click', () => abrirBoleto(b.unicoAtivo.id));
+    el.querySelector('#so-esta')?.addEventListener('click', () => abrirBoleto(id, { individual: true }));
   });
 }
 
@@ -3330,7 +3351,7 @@ function formularioSegundaVia(id, boleto, erro) {
       })
       .catch(() => { const t = el.querySelector('#p-total'); if (t) t.textContent = 'não foi possível calcular'; });
 
-    el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id));
+    el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id, { individual: true }));
     gerar.addEventListener('click', async () => {
       gerar.disabled = true; gerar.textContent = 'Gerando…';
       try {
@@ -3338,7 +3359,7 @@ function formularioSegundaVia(id, boleto, erro) {
         estado.financeiro = await chamar('/financeiro');
         abaFinanceiro();
         avisar('2ª via gerada');
-        abrirBoleto(id);
+        abrirBoleto(id, { individual: true });
       } catch (err) {
         const mensagens = {
           nao_esta_vencida: 'Esta parcela não está vencida.',
