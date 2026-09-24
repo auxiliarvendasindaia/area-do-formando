@@ -2809,7 +2809,7 @@ function abaFinanceiro() {
     ${lista.length ? agruparParcelas(lista)
       : '<div class="cartao plano"><div class="vazio">Nenhuma parcela nesta situação.</div></div>'}
 
-    ${boletos.some((b) => b.taxaBoleto) ? `<p class="rodape-nota">Cada boleto soma a <b>taxa administrativa de gestão de conta</b> prevista no seu contrato; ela não faz parte do valor das parcelas. Num boleto único ela é cobrada uma vez só.</p>` : ''}
+    ${boletos.some((b) => b.taxaBoleto) ? `<p class="rodape-nota">Cada boleto soma a <b>taxa administrativa de gestão de conta</b> prevista no seu contrato.</p>` : ''}
     <p class="rodape-nota">As parcelas <b>programadas</b> ainda não têm boleto — ele é gerado alguns dias antes do vencimento. Para pagar antes, use <b>Antecipar ou quitar</b>: o boleto único sai na hora.</p>
     ${notaRodape()}
   `, `${resumo.parcelasPagas} de ${resumo.parcelas} parcelas pagas`);
