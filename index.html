@@ -3633,8 +3633,15 @@ function formularioContestacao(id, boleto) {
         });
         estado.financeiro = await chamar('/financeiro').catch(() => estado.financeiro);
         if (estado.aba === 'financeiro') abaFinanceiro();
-        avisar(`Contestação aberta — protocolo ${r.protocolo}`);
-        abrirBoleto(id);
+        const motivo = el.querySelector('#motivo').value;
+        const detalhe = el.querySelector('#detalhe').value.trim();
+        folhaPedidoEnviado({
+          titulo: 'Contestação <em>registrada</em>',
+          sub: `${escapar(nomeCobranca(boleto))} · ${brl(aPagar(boleto))}`,
+          protocolo: r.protocolo,
+          texto: textoDoPedido('Contestação', motivo, [nomeCobranca(boleto), detalhe].filter(Boolean).join(' — '), r.protocolo),
+          nota: 'A cobrança fica marcada como contestada até a equipe analisar.',
+        });
       } catch (err) {
         if (err.message === 'contestacao_ja_aberta') { avisar('Você já tem uma contestação aberta para esta cobrança'); return abrirBoleto(id); }
         e.target.disabled = false; e.target.textContent = 'Abrir contestação';
@@ -3649,7 +3656,6 @@ function formularioContestacao(id, boleto) {
 // negociação é feita pela equipe. Por enquanto o formando abre o pedido e diz
 // como prefere ser contatado; a autonomia para negociar sozinho vem depois.
 // Até duas vencidas, ele resolve pela 2ª via ou pelo boleto único.
-const CONTATO_PREFERIDO = ['WhatsApp', 'E-mail'];
 
 async function formularioNegociacao() {
   const vencidas = estado.financeiro.boletos
@@ -3690,15 +3696,12 @@ async function formularioNegociacao() {
       </div>`).join('')}
     <div class="dado"><span>Total hoje, com os encargos de atraso</span><b class="destaque-valor">${brl(total)}</b></div>
 
-    <div class="secao-titulo">Como falar com você</div>
-    <div class="campo">
-      <label for="contato">Prefiro</label>
-      <select id="contato">${CONTATO_PREFERIDO.map((c) => `<option>${c}</option>`).join('')}</select>
-    </div>
+    <div class="secao-titulo">Como falar com a equipe</div>
     <div class="campo">
       <label for="obs-negociacao">Quer contar algo? <small>(opcional)</small></label>
       <textarea id="obs-negociacao" placeholder="Quero negociar meus débitos, quais as opções de pagamento?"></textarea>
     </div>
+    <p class="rodape-nota">O pedido abre uma conversa no seu WhatsApp, já endereçada ao Financeiro.</p>
 
     <p class="rodape-nota">Se a forma de pagamento for reprogramada, o termo prevê uma taxa fixa de
     ${brl(taxa)} ${clausula("17.3")}.</p>
@@ -3709,7 +3712,6 @@ async function formularioNegociacao() {
   `, (el) => {
     el.querySelector('#enviar-negociacao').addEventListener('click', async (e) => {
       e.target.disabled = true; e.target.textContent = 'Enviando…';
-      const contato = el.querySelector('#contato').value;
       const obs = el.querySelector('#obs-negociacao').value.trim();
       try {
         const s = await chamar('/solicitacoes', {
@@ -3717,17 +3719,21 @@ async function formularioNegociacao() {
           body: JSON.stringify({
             tipo: 'renegociacao',
             quantidade: vencidas.length,
-            mensagem: `${vencidas.length} parcelas vencidas (${vencidas.map((b) => b.parcela).join(', ')}) · ${brl(total)} hoje. Contato por ${contato}.${obs ? ` ${obs}` : ''}`,
+            mensagem: `${vencidas.length} parcelas vencidas (${vencidas.map((b) => b.parcela).join(', ')}) · ${brl(total)} hoje.${obs ? ` ${obs}` : ''}`,
           }),
         });
-        abrirFolha(`
-          <h2>Pedido <em>enviado</em></h2>
-          <div class="sub">A equipe vai falar com você por ${escapar(contato.toLowerCase())}.</div>
-          <div class="dado"><span>Protocolo</span><b>${escapar(s.protocolo)}</b></div>
-          <p class="rodape-nota">Enquanto isso, a 2ª via de cada parcela continua disponível, se você quiser
-          pagar alguma antes.</p>
-          <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
-        `);
+        folhaPedidoEnviado({
+          titulo: 'Pedido <em>registrado</em>',
+          sub: `${vencidas.length} parcelas vencidas · ${brl(total)} hoje`,
+          protocolo: s.protocolo,
+          texto: textoDoPedido(
+            'Negociação de débitos',
+            obs || 'Quero negociar meus débitos, quais as opções de pagamento?',
+            `${vencidas.length} parcelas vencidas (${vencidas.map((b) => b.parcela).join(', ')}) — ${brl(total)} hoje`,
+            s.protocolo,
+          ),
+          nota: 'Enquanto isso, a 2ª via de cada parcela continua disponível, se você quiser pagar alguma antes.',
+        });
       } catch {
         e.target.disabled = false; e.target.textContent = 'Pedir contato da equipe';
         avisar('Não foi possível enviar agora');
@@ -4564,11 +4570,44 @@ function telaInstalar() {
   });
 }
 
-function abrirWhatsapp() {
+function abrirWhatsapp(mensagem) {
   const numero = estado.config?.whatsappAtendimento;
   if (!numero) return avisar('WhatsApp do atendimento não configurado');
-  const texto = encodeURIComponent(`Oi! Sou ${estado.eu?.nome || ''}, da turma ${estado.eu?.turma?.codigo || ''}.`);
-  window.open(`https://wa.me/${numero}?text=${texto}`, '_blank', 'noopener');
+  const padrao = `Oi! Sou ${estado.eu?.nome || ''}, da turma ${estado.eu?.turma?.codigo || ''}.`;
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensagem || padrao)}`, '_blank', 'noopener');
+}
+
+// Decisão da equipe (24/09/2026): pedido aberto aqui vira CONVERSA no WhatsApp,
+// na fila do Financeiro — não uma tarefa que alguém precisa ir buscar. Quem
+// manda a mensagem é o próprio formando, do WhatsApp dele: assim a conversa
+// entra pelo caminho de sempre, sem depender da janela de 24 horas nem de
+// template aprovado. O protocolo vai junto para a equipe achar o pedido.
+function textoDoPedido(rotulo, assunto, detalhe, protocolo) {
+  return [`${rotulo}: ${assunto}`, detalhe, protocolo ? `Protocolo ${protocolo}` : '']
+    .filter(Boolean)
+    .join('\n');
+}
+
+function folhaPedidoEnviado({ titulo, sub, protocolo, texto, nota }) {
+  abrirFolha(`
+    <h2>${titulo}</h2>
+    <div class="sub">${sub}</div>
+    <div class="dado"><span>Protocolo</span><b>${escapar(protocolo)}</b></div>
+    <div class="faixa info" style="margin-top:14px">
+      <div>Falta enviar a mensagem: ela abre com o texto pronto no seu WhatsApp e cai direto
+      na fila do Financeiro.</div>
+    </div>
+    <div class="acoes dupla">
+      <button class="botao" id="abrir-whats">Enviar no WhatsApp</button>
+      <button class="botao fantasma" data-fechar-folha>Agora não</button>
+    </div>
+    ${nota ? `<p class="rodape-nota">${nota}</p>` : ''}
+  `, (el) => {
+    el.querySelector('#abrir-whats').addEventListener('click', () => {
+      abrirWhatsapp(texto);
+      fecharFolha();
+    });
+  });
 }
 
 // ---------- orquestração -----------------------------------------------------
