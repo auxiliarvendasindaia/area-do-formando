@@ -2062,7 +2062,26 @@ function avisar(texto) {
   avisar._t = setTimeout(() => { toast.hidden = true; }, 2600);
 }
 
+/**
+ * A fonte de dados oferece esta ação?
+ *
+ * No protótipo tudo existe. Ligado ao CRM, algumas coisas ainda não foram
+ * construídas (2ª via e boleto único escrevem cobrança na Vindi e entram uma a
+ * uma) — e oferecer um botão que morre em erro é pior do que não oferecer.
+ * `api-crm.js` declara o que falta em `window.API_RECURSOS`.
+ */
+function temRecurso(nome) {
+  const r = window.API_RECURSOS;
+  return !r || r[nome] !== false;
+}
+
 async function chamar(caminho, opcoes = {}) {
+  // Com `window.API_URL` apontando para o CRM, o portal lê dados REAIS — a
+  // tradução dos caminhos e formatos mora em api-crm.js.
+  if (window.API_CRM) {
+    const corpo = opcoes.body ? JSON.parse(opcoes.body) : null;
+    return window.API_CRM(opcoes.method || 'GET', caminho, corpo, estado.token || estado.tokenEscolha);
+  }
   // Na versão publicada não há servidor: a mesma API roda no navegador.
   if (window.API_DEMO) {
     const corpo = opcoes.body ? JSON.parse(opcoes.body) : null;
@@ -2571,7 +2590,7 @@ function itemBoleto(b) {
       <div class="quanto">
         ${mostrarPleno ? `<span class="pleno" title="valor pleno, sem o desconto de pontualidade">${brl(b.valorPleno + (b.taxaBoleto || 0))}</span>` : ''}
         <b>${brl(aPagar(b))}</b>
-        ${atraso ? '<span class="economia">com encargos e taxa</span>'
+        ${atraso && b.encargosHoje ? '<span class="economia">com encargos e taxa</span>'
           : b.taxaBoleto ? `<span class="economia">inclui ${brl(b.taxaBoleto)} de taxa</span>` : ''}
       </div>
       <div class="seta">›</div>
@@ -2704,9 +2723,15 @@ function abaFinanceiro() {
   const filtro = FILTROS.find((f) => f.id === estado.filtro) || FILTROS[0];
   const lista = parcelas.filter(filtro.teste).sort((a, b) => (filtro.id === 'pagas' ? -1 : 1) * a.vencimento.localeCompare(b.vencimento));
   const proxima = proximaParaPagar();
-  const podeAntecipar = parcelas.some((b) => !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status));
+  const podeAntecipar = temRecurso('boletoUnico')
+    && parcelas.some((b) => !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status));
 
   const emAberto = resumo.emAberto + resumo.emAtraso + (resumo.emAnalise || 0) + resumo.aEmitir;
+  // Parcelas do contrato ainda não pagas — o par do valor "Em aberto" ao lado.
+  const aPagarNoContrato = Math.max(0, (resumo.parcelas || parcelas.length) - resumo.parcelasPagas);
+  // Quanto do contrato ainda não virou boleto — a nota do rodapé só aparece se
+  // houver diferença, para não poluir quem já tem tudo emitido.
+  const porGerar = Math.max(0, (resumo.parcelas || parcelas.length) - parcelas.length);
   const atrasadas = boletos.filter((b) => b.status === 'em_atraso');
   const emAnalise = boletos.filter((b) => b.status === 'em_analise');
   const negociar = atrasadas.length > MAX_VENCIDAS_SEM_EQUIPE;
@@ -2729,7 +2754,10 @@ function abaFinanceiro() {
         <div>
           <div class="rot">Em aberto</div>
           <b>${brl(emAberto)}</b>
-          <small>${resumo.parcelas - resumo.parcelasPagas} parcelas</small>
+          <!-- Parcelas do CONTRATO, para casar com o valor acima, que é o que
+               falta pagar do contrato inteiro. A lista abaixo mostra menos (a
+               cobrança sai em lotes) — quem explica isso é a nota do rodapé. -->
+          <small>${aPagarNoContrato} parcela${aPagarNoContrato === 1 ? '' : 's'}</small>
         </div>
       </div>
       <div class="trilho"><i style="width:${pct.toFixed(1)}%"></i></div>
@@ -2744,9 +2772,9 @@ function abaFinanceiro() {
           <div>
             <div class="rot" style="font-size:13px;color:rgba(242,233,218,.6)">${proxima.status === 'em_atraso' ? `${escapar(nomeCobranca(proxima))} em atraso` : proxima.unico ? 'Boleto único' : 'Próxima parcela'}</div>
             <div class="valor">${brl(aPagar(proxima))}</div>
-            <div class="quando">${escapar(apoioCobranca(proxima))} · ${proxima.status === 'em_atraso' ? 'venceu' : 'vence'} em ${dataCurta(proxima.vencimento)}${proxima.status === 'em_atraso' ? ' · valor com encargos até hoje' : ''}</div>
+            <div class="quando">${escapar(apoioCobranca(proxima))} · ${proxima.status === 'em_atraso' ? 'venceu' : 'vence'} em ${dataCurta(proxima.vencimento)}${proxima.status === 'em_atraso' && proxima.encargosHoje ? ' · valor com encargos até hoje' : ''}</div>
           </div>
-          <button class="botao" data-boleto="${escapar(proxima.id)}">${proxima.status === 'em_atraso' ? 'Gerar 2ª via' : proxima.status === 'em_aberto' ? 'Ver boleto' : 'Ver parcela'}</button>
+          <button class="botao" data-boleto="${escapar(proxima.id)}">${proxima.status === 'em_atraso' && temRecurso('segundaVia') ? 'Gerar 2ª via' : proxima.status === 'em_aberto' ? 'Ver boleto' : 'Ver parcela'}</button>
         </div>` : ''}
     </div>
 
@@ -2810,6 +2838,7 @@ function abaFinanceiro() {
       : '<div class="cartao plano"><div class="vazio">Nenhuma parcela nesta situação.</div></div>'}
 
     ${boletos.some((b) => b.taxaBoleto) ? `<p class="rodape-nota">Cada boleto soma a <b>taxa administrativa de gestão de conta</b> prevista no seu contrato.</p>` : ''}
+    ${porGerar ? `<p class="rodape-nota">Seu contrato tem <b>${resumo.parcelas} parcelas</b>. Aqui aparecem as <b>${parcelas.length}</b> já emitidas — as outras ${porGerar} entram na lista conforme os boletos forem gerados. Nada a fazer por enquanto.</p>` : ''}
     <p class="rodape-nota">As parcelas <b>programadas</b> ainda não têm boleto — ele é gerado alguns dias antes do vencimento. Para pagar antes, use <b>Antecipar ou quitar</b>: o boleto único sai na hora.</p>
     ${notaRodape()}
   `, `${resumo.parcelasPagas} de ${resumo.parcelas} parcelas pagas`);
@@ -3105,16 +3134,22 @@ async function abrirBoleto(id, { individual = false } = {}) {
       <div class="faixa ouro" style="margin-top:16px">
         <div><b>Comprovante em análise.</b> Você anexou ${c ? escapar(c.arquivo) : 'o comprovante'} em
         ${c ? dataCurta(c.enviadoEm.slice(0, 10)) : 'dias atrás'} e a equipe está conferindo. Quando a baixa sair,
-        a parcela muda sozinha. Se o pagamento não for confirmado, você ainda pode gerar a 2ª via.</div>
+        a parcela muda sozinha.${temRecurso('segundaVia') ? ' Se o pagamento não for confirmado, você ainda pode gerar a 2ª via.' : ''}</div>
       </div>
-      <div class="acoes"><button class="botao secundario" id="segunda-via">Gerar 2ª via mesmo assim</button></div>`;
+      ${temRecurso('segundaVia') ? '<div class="acoes"><button class="botao secundario" id="segunda-via">Gerar 2ª via mesmo assim</button></div>' : ''}`;
   } else if (atraso && !b.unico) {
     acoes = `
-      <div class="faixa alerta" style="margin-top:14px">
-        <div><b>O boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova — ela
-        já sai com o valor acima atualizado até o dia escolhido.</div>
-      </div>
-      <div class="acoes"><button class="botao" id="segunda-via">Gerar 2ª via</button></div>`;
+      ${temRecurso('segundaVia') ? `
+        <div class="faixa alerta" style="margin-top:14px">
+          <div><b>O boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova — ela
+          já sai com o valor acima atualizado até o dia escolhido.</div>
+        </div>
+        <div class="acoes"><button class="botao" id="segunda-via">Gerar 2ª via</button></div>` : `
+        <div class="faixa alerta" style="margin-top:14px">
+          <div><b>O boleto vencido não é aceito pelo banco.</b> Fale com a equipe para receber a 2ª
+          via com o valor atualizado — é o mesmo valor mostrado acima, até a data do pagamento.</div>
+        </div>
+        <div class="acoes"><button class="botao secundario" id="falar-equipe">Falar com a equipe</button></div>`}`;
   } else if (pagavel) {
     acoes = `
       <div class="secao-titulo">Linha digitável</div>
@@ -3209,6 +3244,10 @@ async function abrirBoleto(id, { individual = false } = {}) {
   abrirFolha(corpo, (el) => {
     el.querySelector('#recibo')?.addEventListener('click', () => abrirRecibo(id));
     el.querySelector('#segunda-via')?.addEventListener('click', () => formularioSegundaVia(id, b));
+    // Só aparece quando a 2ª via ainda não existe do outro lado: a conversa é a
+    // saída, e já vai com a parcela escrita para ninguém ter de explicar qual é.
+    el.querySelector('#falar-equipe')?.addEventListener('click', () =>
+      abrirWhatsapp(`Olá! Preciso da 2ª via da ${nomeCobranca(b)}, que venceu em ${dataCurta(b.vencimento)}.`));
     el.querySelector('#contestar')?.addEventListener('click', () => formularioContestacao(id, b));
     el.querySelector('#ver-contestacao')?.addEventListener('click', telaMeusPedidos);
     el.querySelector('#enviar-comprovante')?.addEventListener('click', () => formularioComprovante(id, b));
@@ -3398,7 +3437,10 @@ async function abrirExtratoPdf() {
 // ---------- meus comprovantes ------------------------------------------------
 // Tudo o que o formando anexou, num lugar só — é o que responde ao "mandei o
 // comprovante e ninguém viu". Daqui também dá para mandar um novo.
-const STATUS_COMPROVANTE = { em_analise: 'Em análise', aceito: 'Conferido', recusado: 'Não conferido' };
+// "Conferido" e "Não conferido" saíram em 25/09: o comprovante não passa por
+// aprovação de ninguém — fica guardado, e o que resolve a parcela é a baixa.
+// Enquanto ela não sai, o que o formando precisa saber é que está em análise.
+const STATUS_COMPROVANTE = { em_analise: 'Em análise' };
 
 async function telaComprovantes() {
   abrirFolha('<div class="vazio">Carregando…</div>');
@@ -3425,7 +3467,7 @@ async function telaComprovantes() {
               <span>${escapar(c.cobranca)} · enviado em ${dataCurta(c.enviadoEm.slice(0, 10))} · ${Math.max(1, Math.round(c.tamanho / 1024))} KB</span>
               ${c.protocolo ? `<br><span class="protocolo">${escapar(c.protocolo)}</span>` : ''}
             </span>
-            <span class="marca-status s-em_aberto">${STATUS_COMPROVANTE[c.status] || escapar(c.status)}</span>
+            <span class="marca-status s-em_aberto">${STATUS_COMPROVANTE[c.status] || 'Em análise'}</span>
           </button>`).join('')}
       </div>` : '<div class="cartao plano"><div class="vazio">Você ainda não enviou nenhum comprovante.</div></div>'}
 
@@ -3573,18 +3615,23 @@ function formularioSegundaVia(id, boleto, erro) {
     gerar.addEventListener('click', async () => {
       gerar.disabled = true; gerar.textContent = 'Gerando…';
       try {
-        await chamar(`/financeiro/${id}/segunda-via`, { method: 'POST', body: JSON.stringify({ novoVencimento }) });
+        const r = await chamar(`/financeiro/${id}/segunda-via`, { method: 'POST', body: JSON.stringify({ novoVencimento }) });
         estado.financeiro = await chamar('/financeiro');
         abaFinanceiro();
         avisar('2ª via gerada');
-        abrirBoleto(id, { individual: true });
+        // No protótipo a parcela mantém o id; no CRM a 2ª via é uma cobrança
+        // NOVA e a antiga sai da lista — abrir o id velho mostraria "não
+        // encontrada" logo depois de dar certo.
+        abrirBoleto(r?.novoBillId || id, { individual: true });
       } catch (err) {
         const mensagens = {
           nao_esta_vencida: 'Esta parcela não está vencida.',
           data_invalida: 'Não foi possível usar esta data.',
           data_longe: `A 2ª via vence em até ${DIAS_SEGUNDA_VIA} dias.`,
         };
-        formularioSegundaVia(id, boleto, mensagens[err.message] || 'Não foi possível gerar agora.');
+        // `detalhe` é a frase que o CRM já manda pronta e explicando; os códigos
+        // acima são do protótipo, que devolve erro em uma palavra.
+        formularioSegundaVia(id, boleto, mensagens[err.message] || err.detalhe || 'Não foi possível gerar agora.');
       }
     });
   });
