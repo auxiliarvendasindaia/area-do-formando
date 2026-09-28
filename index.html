@@ -3680,13 +3680,10 @@ function formularioContestacao(id, boleto) {
         });
         estado.financeiro = await chamar('/financeiro').catch(() => estado.financeiro);
         if (estado.aba === 'financeiro') abaFinanceiro();
-        const motivo = el.querySelector('#motivo').value;
-        const detalhe = el.querySelector('#detalhe').value.trim();
         folhaPedidoEnviado({
           titulo: 'Contestação <em>registrada</em>',
           sub: `${escapar(nomeCobranca(boleto))} · ${brl(aPagar(boleto))}`,
           protocolo: r.protocolo,
-          texto: textoDoPedido('Contestação', motivo, [nomeCobranca(boleto), detalhe].filter(Boolean).join(' — '), r.protocolo),
           nota: 'A cobrança fica marcada como contestada até a equipe analisar.',
         });
       } catch (err) {
@@ -3773,12 +3770,6 @@ async function formularioNegociacao() {
           titulo: 'Pedido <em>registrado</em>',
           sub: `${vencidas.length} parcelas vencidas · ${brl(total)} hoje`,
           protocolo: s.protocolo,
-          texto: textoDoPedido(
-            'Negociação de débitos',
-            obs || 'Quero negociar meus débitos, quais as opções de pagamento?',
-            `${vencidas.length} parcelas vencidas (${vencidas.map((b) => b.parcela).join(', ')}) — ${brl(total)} hoje`,
-            s.protocolo,
-          ),
           nota: 'Enquanto isso, a 2ª via de cada parcela continua disponível, se você quiser pagar alguma antes.',
         });
       } catch {
@@ -4624,37 +4615,31 @@ function abrirWhatsapp(mensagem) {
   window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensagem || padrao)}`, '_blank', 'noopener');
 }
 
-// Decisão da equipe (24/09/2026): pedido aberto aqui vira CONVERSA no WhatsApp,
-// na fila do Financeiro — não uma tarefa que alguém precisa ir buscar. Quem
-// manda a mensagem é o próprio formando, do WhatsApp dele: assim a conversa
-// entra pelo caminho de sempre, sem depender da janela de 24 horas nem de
-// template aprovado. O protocolo vai junto para a equipe achar o pedido.
-function textoDoPedido(rotulo, assunto, detalhe, protocolo) {
-  return [`${rotulo}: ${assunto}`, detalhe, protocolo ? `Protocolo ${protocolo}` : '']
-    .filter(Boolean)
-    .join('\n');
-}
-
-function folhaPedidoEnviado({ titulo, sub, protocolo, texto, nota }) {
+/**
+ * O pedido foi registrado — e acabou.
+ *
+ * Até 28/09 esta folha pedia para o formando "enviar a mensagem no WhatsApp":
+ * o pedido só existia de verdade quando ELE mandava. Agora o pedido vira
+ * DEMANDA no CRM na hora, com protocolo e responsável (decisão do usuário), e
+ * pedir que ele ainda faça algo seria pedir duas vezes a mesma coisa.
+ *
+ * `texto` continua no parâmetro porque quem chama monta a mensagem para outros
+ * usos; aqui ele não é mais oferecido.
+ */
+function folhaPedidoEnviado({ titulo, sub, protocolo, nota }) {
   abrirFolha(`
     <h2>${titulo}</h2>
     <div class="sub">${sub}</div>
     <div class="dado"><span>Protocolo</span><b>${escapar(protocolo)}</b></div>
     <div class="faixa info" style="margin-top:14px">
-      <div>Falta enviar a mensagem: ela abre com o texto pronto no seu WhatsApp e cai direto
-      na fila do Financeiro.</div>
+      <div>Pronto: a equipe já recebeu. Guarde o protocolo — é por ele que a gente
+      acha o seu pedido. A resposta aparece aqui em <b>Meus pedidos</b>.</div>
     </div>
-    <div class="acoes dupla">
-      <button class="botao" id="abrir-whats">Enviar no WhatsApp</button>
-      <button class="botao fantasma" data-fechar-folha>Agora não</button>
+    <div class="acoes">
+      <button class="botao" data-fechar-folha>Entendi</button>
     </div>
     ${nota ? `<p class="rodape-nota">${nota}</p>` : ''}
-  `, (el) => {
-    el.querySelector('#abrir-whats').addEventListener('click', () => {
-      abrirWhatsapp(texto);
-      fecharFolha();
-    });
-  });
+  `);
 }
 
 // ---------- orquestração -----------------------------------------------------
