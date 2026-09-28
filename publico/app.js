@@ -1,0 +1,2714 @@
+// Área do Formando — front do protótipo local.
+// Conversa só com os endpoints /area-formando/* descritos na Parte 4 do plano.
+// Trocar pela API real depois = mudar API_BASE e de onde vem o token.
+
+const API_BASE = '/area-formando';
+const app = document.getElementById('app');
+const folha = document.getElementById('folha');
+const toast = document.getElementById('aviso-flutuante');
+
+const estado = {
+  token: null,
+  tokenEscolha: null,
+  cpf: '',
+  config: null,
+  eu: null,
+  financeiro: null,
+  contrato: null,
+  turma: null,
+  avisos: null,
+  aba: 'inicio',
+  filtro: 'todas',
+  visao: 'ano',
+  menuAberto: false,
+};
+
+// ---------- utilidades -------------------------------------------------------
+const guardar = (t) => { try { sessionStorage.setItem('formando_token', t); } catch { /* modo privado */ } };
+const recuperar = () => { try { return sessionStorage.getItem('formando_token'); } catch { return null; } };
+const esquecer = () => { try { sessionStorage.removeItem('formando_token'); } catch { /* ignora */ } };
+
+const brl = (v) => (v ?? 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const dataCurta = (iso) => iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
+const dataLonga = (iso) => iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }) : '—';
+const mesAno = (iso) => iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }) : '—';
+const escapar = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Tira o "(TESTE)" do nome do cadastro de teste na hora de mostrar na tela.
+const semMarca = (n) => String(n || '').replace(/\s*\(TESTE\)\s*/i, '').trim();
+
+const hoje = () => estado.config?.hojeSimulado || new Date().toISOString().slice(0, 10);
+const diasAte = (iso) => Math.round((new Date(`${iso}T12:00:00`) - new Date(`${hoje()}T12:00:00`)) / 86400000);
+
+// "agendado" e "nao_gerado" são diferentes na Vindi, mas para o formando são a
+// mesma coisa: o boleto ainda não foi gerado.
+const ROTULO_STATUS = {
+  pago: 'Pago', em_aberto: 'Em aberto', em_atraso: 'Em atraso',
+  agendado: 'Programada', nao_gerado: 'Programada',
+  em_analise: 'Em análise', expirado: 'Expirado',
+};
+
+// Decisões da equipe (22/09/2026): a 2ª via vence em 5 dias; com mais de duas
+// parcelas vencidas, a negociação vira um pedido para a equipe entrar em contato.
+const DIAS_SEGUNDA_VIA = 5;
+const MAX_VENCIDAS_SEM_EQUIPE = 2;
+
+const nomeCobranca = (b) => b.nome || (b.unico ? 'Boleto único' : `Parcela ${b.parcela}`);
+// O que aparece como "Referente a": o código do CRM (E08058 - PARC FORMATURA) não
+// diz nada para o formando e fica só no PDF do boleto.
+function descricaoAmigavel(b) {
+  const turma = estado.eu?.turma?.codigo ? ` · turma ${estado.eu.turma.codigo}` : '';
+  if (b.unico) return `Boleto único · ${rotuloParcelas(b.unico.parcelas)}${turma}`;
+  const total = estado.financeiro?.resumo?.parcelas;
+  return `Parcela ${b.parcela}${total ? ` de ${total}` : ''} da formatura${turma}`;
+}
+
+const rotuloParcelas = (ps) => (ps.length === 1 ? `parcela ${ps[0].parcela}` : `parcelas ${ps[0].parcela} a ${ps[ps.length - 1].parcela}`);
+const maiuscula = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+// a linha de apoio de uma cobrança: "Parcela 6" ou, no boleto único, "Parcelas 6 a 8"
+const apoioCobranca = (b) => (b.unico ? maiuscula(rotuloParcelas(b.unico.parcelas)) : nomeCobranca(b));
+// o que se deve hoje: vencida já vem com os encargos, 2ª via com o valor novo
+const arredondar = (n) => Math.round(n * 100) / 100;
+const devido = (b) => b.valorDevido ?? b.valorAtualizado ?? b.valor;
+// o que o banco cobra: o devido mais a taxa administrativa do contrato
+const aPagar = (b) => b.totalBoleto ?? devido(b);
+
+function avisar(texto) {
+  toast.textContent = texto;
+  toast.hidden = false;
+  clearTimeout(avisar._t);
+  avisar._t = setTimeout(() => { toast.hidden = true; }, 2600);
+}
+
+/**
+ * A fonte de dados oferece esta ação?
+ *
+ * No protótipo tudo existe. Ligado ao CRM, algumas coisas ainda não foram
+ * construídas (2ª via e boleto único escrevem cobrança na Vindi e entram uma a
+ * uma) — e oferecer um botão que morre em erro é pior do que não oferecer.
+ * `api-crm.js` declara o que falta em `window.API_RECURSOS`.
+ */
+function temRecurso(nome) {
+  const r = window.API_RECURSOS;
+  return !r || r[nome] !== false;
+}
+
+async function chamar(caminho, opcoes = {}) {
+  // Com `window.API_URL` apontando para o CRM, o portal lê dados REAIS — a
+  // tradução dos caminhos e formatos mora em api-crm.js.
+  if (window.API_CRM) {
+    const corpo = opcoes.body ? JSON.parse(opcoes.body) : null;
+    return window.API_CRM(opcoes.method || 'GET', caminho, corpo, estado.token || estado.tokenEscolha);
+  }
+  // Na versão publicada não há servidor: a mesma API roda no navegador.
+  if (window.API_DEMO) {
+    const corpo = opcoes.body ? JSON.parse(opcoes.body) : null;
+    return window.API_DEMO(opcoes.method || 'GET', caminho, corpo, estado.token || estado.tokenEscolha);
+  }
+  const resposta = await fetch(API_BASE + caminho, {
+    ...opcoes,
+    headers: {
+      'content-type': 'application/json',
+      ...(estado.token || estado.tokenEscolha ? { authorization: `Bearer ${estado.token || estado.tokenEscolha}` } : {}),
+      ...opcoes.headers,
+    },
+  });
+  const corpo = await resposta.json().catch(() => ({}));
+  if (!resposta.ok) throw Object.assign(new Error(corpo.erro || 'falha'), { status: resposta.status, corpo });
+  return corpo;
+}
+
+function abrirFolha(html, depois) {
+  folha.querySelector('.folha-corpo').innerHTML = html;
+  folha.hidden = false;
+  if (depois) depois(folha.querySelector('.folha-corpo'));
+}
+const fecharFolha = () => { folha.hidden = true; };
+folha.addEventListener('click', (e) => { if (e.target.hasAttribute('data-fechar-folha')) fecharFolha(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { fecharBaloes(); fecharFolha(); } });
+
+async function copiar(texto) {
+  try {
+    await navigator.clipboard.writeText(texto);
+  } catch {
+    const campo = document.createElement('textarea');
+    campo.value = texto; document.body.appendChild(campo); campo.select();
+    document.execCommand('copy'); campo.remove();
+  }
+  avisar('Linha digitável copiada');
+}
+
+// ---------- tela: entrar -----------------------------------------------------
+function mascaraCpf(v) {
+  const d = v.replace(/\D/g, '').slice(0, 11);
+  return d.replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+}
+
+const marca = () => `
+  <div class="marca">
+    <img src="/logo-formaturas.png" alt="Indaiá Formaturas" />
+    <div class="assinatura">transformando histórias.</div>
+  </div>`;
+
+function telaEntrar(erro) {
+  app.className = 'entrar';
+  app.innerHTML = `
+    <div class="entrar-caixa">
+      ${marca()}
+      <div class="cartao">
+        <div class="kicker">Área do Formando</div>
+        <h1>Acesse sua <span class="grifo">conta</span></h1>
+        <p class="sub">Informe seu CPF para receber um código de acesso por WhatsApp ou e-mail.</p>
+        <form id="form-cpf" novalidate>
+          <div class="campo">
+            <label for="cpf">CPF</label>
+            <input id="cpf" inputmode="numeric" autocomplete="off" placeholder="000.000.000-00" value="${escapar(mascaraCpf(estado.cpf))}" />
+          </div>
+          ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+          <button class="botao" type="submit">Receber código</button>
+        </form>
+        ${estado.config?.cpfExemplo ? `
+          <div class="dev">
+            Ambiente de teste: nenhum código é enviado por e-mail ou WhatsApp — ele aparece
+            aqui na tela. Entre com <strong class="cpf">${escapar(mascaraCpf(estado.config.cpfExemplo))}</strong>
+          </div>` : ''}
+      </div>
+      ${notaRodape()}
+    </div>`;
+
+  const campo = app.querySelector('#cpf');
+  campo.addEventListener('input', () => { campo.value = mascaraCpf(campo.value); });
+  app.querySelector('#form-cpf').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const cpf = campo.value.replace(/\D/g, '');
+    if (cpf.length !== 11) return telaEntrar('Digite os 11 números do CPF.');
+    estado.cpf = cpf;
+    const botao = app.querySelector('button[type=submit]');
+    botao.disabled = true; botao.textContent = 'Enviando…';
+    try {
+      const r = await chamar('/auth/otp/solicitar', { method: 'POST', body: JSON.stringify({ cpf }) });
+      // Em produção a resposta é sempre a mesma, exista o CPF ou não. No protótipo,
+      // onde nada é enviado, ficar na tela do código sem código só confunde.
+      if (r.cadastrado === false) {
+        const sugerido = estado.config?.cpfExemplo ? ` Use ${mascaraCpf(estado.config.cpfExemplo)}.` : '';
+        return telaEntrar(`Esse CPF não está nos dados de exemplo.${sugerido}`);
+      }
+      telaCodigo(r);
+    } catch (err) {
+      const mensagens = {
+        cpf_invalido: 'CPF inválido.',
+        aguarde: `Aguarde ${err.corpo?.segundos || 60} segundos para pedir outro código.`,
+        muitas_tentativas: 'Você já pediu muitos códigos hoje. Fale com a gente pelo WhatsApp.',
+      };
+      telaEntrar(mensagens[err.message] || 'Não foi possível enviar o código agora.');
+    }
+  });
+}
+
+function telaCodigo(envio, erro) {
+  app.className = 'entrar';
+  const destinos = [envio.destinos?.whatsapp, envio.destinos?.email].filter(Boolean);
+  app.innerHTML = `
+    <div class="entrar-caixa">
+      ${marca()}
+      <div class="cartao">
+        <div class="kicker">Código de acesso</div>
+        <h1>Digite o código</h1>
+        <p class="sub">${destinos.length ? escapar(`Enviado para ${destinos.join(' e ')}.`) : 'Se o CPF estiver cadastrado, o código já foi enviado.'}</p>
+        <form id="form-codigo" novalidate>
+          <div class="campo">
+            <label for="codigo">6 dígitos</label>
+            <input id="codigo" class="codigo" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" />
+            <div class="dica">Vale por 10 minutos.</div>
+          </div>
+          ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+          <button class="botao" type="submit">Entrar</button>
+          <button class="botao fantasma" type="button" id="voltar">Usar outro CPF</button>
+        </form>
+        ${envio.codigoDev ? `<div class="dev">Ambiente de teste — o código é <strong>${escapar(envio.codigoDev)}</strong>. Em produção ele só chega por WhatsApp e e-mail.</div>` : ''}
+      </div>
+    </div>`;
+
+  const campo = app.querySelector('#codigo');
+  campo.focus();
+  campo.addEventListener('input', () => { campo.value = campo.value.replace(/\D/g, ''); });
+  app.querySelector('#voltar').addEventListener('click', () => telaEntrar());
+  app.querySelector('#form-codigo').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const botao = app.querySelector('button[type=submit]');
+    botao.disabled = true; botao.textContent = 'Verificando…';
+    try {
+      const r = await chamar('/auth/otp/verificar', { method: 'POST', body: JSON.stringify({ cpf: estado.cpf, codigo: campo.value }) });
+      if (r.precisaEscolherTurma) { estado.tokenEscolha = r.tokenEscolha; return telaEscolherTurma(r.turmas); }
+      estado.token = r.token; guardar(r.token);
+      await entrar();
+    } catch (err) {
+      const mensagens = {
+        codigo_invalido: 'Código incorreto ou expirado.',
+        muitas_tentativas: 'Muitas tentativas. Peça um código novo.',
+      };
+      telaCodigo(envio, mensagens[err.message] || 'Não foi possível entrar agora.');
+    }
+  });
+}
+
+function telaEscolherTurma(turmas) {
+  app.className = 'entrar';
+  app.innerHTML = `
+    <div class="entrar-caixa">
+      ${marca()}
+      <div class="cartao">
+        <div class="kicker">Quase lá</div>
+        <h1>Qual turma?</h1>
+        <p class="sub">Seu CPF está em mais de uma formatura.</p>
+        <div class="opcoes-turma">
+          ${turmas.map((t) => `
+            <button class="opcao-turma" data-adesao="${escapar(t.adesaoId)}">
+              <strong>${escapar(t.turma)}</strong>
+              <span>${escapar(t.curso)} · ${escapar(t.cidade)} · ${dataCurta(t.dataEvento)}</span>
+            </button>`).join('')}
+        </div>
+        <button class="botao fantasma" type="button" id="voltar">Voltar</button>
+      </div>
+    </div>`;
+  app.querySelector('#voltar').addEventListener('click', () => telaEntrar());
+  app.querySelectorAll('.opcao-turma').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      const r = await chamar('/auth/escolher-turma', { method: 'POST', body: JSON.stringify({ adesaoId: b.dataset.adesao }) });
+      estado.tokenEscolha = null;
+      estado.token = r.token; guardar(r.token);
+      await entrar();
+    } catch { telaEntrar('Não foi possível abrir essa turma.'); }
+  }));
+}
+
+function telaCancelada() {
+  app.className = 'entrar';
+  app.innerHTML = `
+    <div class="entrar-caixa">
+      ${marca()}
+      <div class="cartao">
+        <div class="kicker">Área do Formando</div>
+        <h1>Sua adesão foi cancelada</h1>
+        <p class="sub">${escapar(estado.eu?.canceladaEm ? `Cancelamento registrado em ${dataCurta(estado.eu.canceladaEm)}.` : '')}</p>
+        <p style="margin:0 0 18px">Por isso o financeiro e os documentos não aparecem aqui. Se você acha que houve engano, fale com a gente — a equipe de formaturas resolve pelo WhatsApp.</p>
+        <button class="botao" id="zap">Falar com a equipe</button>
+        <button class="botao fantasma" id="sair">Sair</button>
+      </div>
+    </div>`;
+  app.querySelector('#zap').addEventListener('click', abrirWhatsapp);
+  app.querySelector('#sair').addEventListener('click', sair);
+}
+
+// ---------- moldura com menu lateral ----------------------------------------
+const ICONES = {
+  inicio: '<svg viewBox="0 0 24 24"><path d="M3.5 10.5 12 3.5l8.5 7M5.5 9.5v10h13v-10"/><path d="M10 19.5v-5.5h4v5.5"/></svg>',
+  financeiro: '<svg viewBox="0 0 24 24"><rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19M6 14.5h3"/></svg>',
+  contrato: '<svg viewBox="0 0 24 24"><path d="M6 2.5h8l4.5 4.5v14a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5v-17A1.5 1.5 0 0 1 6 2.5Z"/><path d="M13.5 2.8V7.5h4.7M8 12.5h8M8 16.5h5"/></svg>',
+  turma: '<svg viewBox="0 0 24 24"><path d="M12 3.5 22 8.5l-10 5-10-5 10-5Z"/><path d="M6 11v5.5c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V11M22 8.5v5"/></svg>',
+  cronograma: '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4M7.5 14h3M7.5 17.5h7"/></svg>',
+  zap: '<svg viewBox="0 0 24 24"><path d="M3.5 20.5 5 16.3a8 8 0 1 1 3.2 3.1l-4.7 1.1Z"/></svg>',
+  sair: '<svg viewBox="0 0 24 24"><path d="M9.5 4.5h-4v15h4M14 8l4 4-4 4M18 12H9"/></svg>',
+  menu: '<svg viewBox="0 0 24 24"><path d="M3.5 7h17M3.5 12h17M3.5 17h17"/></svg>',
+  tema: '<svg viewBox="0 0 24 24"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4 8.5 8.5 0 1 0 20 14.2Z"/></svg>',
+  pessoa: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.8 20.5c0-3.6 3.2-6.2 7.2-6.2s7.2 2.6 7.2 6.2"/></svg>',
+  pedidos: '<svg viewBox="0 0 24 24"><path d="M8 4.5h8a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M9.5 9h5M9.5 13h5M9.5 17h3M9 4.5V3.5h6v1"/></svg>',
+  anexo: '<svg viewBox="0 0 24 24"><path d="M14 6.5 8 12.5a3 3 0 0 0 4.2 4.2l6.3-6.3a5 5 0 0 0-7-7L5 9.7a7 7 0 0 0 9.9 9.9l5-5"/></svg>',
+  sino: '<svg viewBox="0 0 24 24"><path d="M6 9a6 6 0 1 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>',
+  recibo: '<svg viewBox="0 0 24 24"><path d="M5 3.5h14v17l-2.3-1.5-2.4 1.5-2.3-1.5-2.3 1.5L7.4 19 5 20.5Z"/><path d="M9 8.5h6M9 12.5h6"/></svg>',
+  antecipar: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.2 2"/></svg>',
+  extrato: '<svg viewBox="0 0 24 24"><path d="M6 3.5h12v17H6Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>',
+  informe: '<svg viewBox="0 0 24 24"><path d="M7 3.5h10v17H7Z"/><path d="M10 8h4M10 12h4M10 16h2"/><circle cx="17.5" cy="17.5" r="3.5"/></svg>',
+  calendario: '<svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>',
+  mapa: '<svg viewBox="0 0 24 24"><path d="M12 21s6.5-6 6.5-10.5a6.5 6.5 0 1 0-13 0C5.5 15 12 21 12 21Z"/><circle cx="12" cy="10.5" r="2.4"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></svg>',
+  duvida: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.3 2.4c-.6.2-.9.8-.9 1.4v.5"/><path d="M12 17h.01"/></svg>',
+  relogio: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5l3 1.8"/></svg>',
+  celular: '<svg viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>',
+};
+
+// ---------- tema claro/escuro ------------------------------------------------
+// Sem escolha salva, vale o tema do sistema. A escolha fica no navegador.
+const temaAtual = () => {
+  try {
+    const salvo = localStorage.getItem('formando_tema');
+    if (salvo) return salvo;
+  } catch { /* modo privado */ }
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'escuro' : 'claro';
+};
+
+function aplicarTema(tema) {
+  document.documentElement.setAttribute('data-tema', tema);
+  try { localStorage.setItem('formando_tema', tema); } catch { /* segue sem lembrar */ }
+}
+
+function alternarTema() {
+  aplicarTema(temaAtual() === 'escuro' ? 'claro' : 'escuro');
+  if (estado.eu) irPara(estado.aba);
+}
+
+// O título de cada aba leva um <em> em itálico violeta, como os títulos do site de formaturas.
+const ABAS = [
+  { id: 'inicio', rotulo: 'Início', titulo: 'Minha <em>formatura</em>' },
+  { id: 'financeiro', rotulo: 'Financeiro', titulo: 'Meu <em>financeiro</em>' },
+  { id: 'cronograma', rotulo: 'Cronograma', titulo: 'O <em>cronograma</em>' },
+  { id: 'contrato', rotulo: 'Contrato', titulo: 'Contrato e <em>convites</em>' },
+  { id: 'turma', rotulo: 'Minha turma', titulo: 'Minha <em>turma</em>' },
+];
+
+// ---------- cursos: símbolo e frase ------------------------------------------
+// Cada curso tem o símbolo que o representa e uma frase escrita para ele.
+// A busca é pelo nome do curso que vem da adesão; sem correspondência, cai no
+// genérico (o capelo).
+const CURSOS = [
+  { re: /enfermagem/i, nome: 'Enfermagem', frase: 'Quem passou noites cuidando de gente merece uma noite {inteira sua}.',
+    svg: '<path d="M12 3c-2.2 2.6-4 4.7-4 7.2a4 4 0 0 0 8 0C16 7.7 14.2 5.6 12 3Z"/><path d="M8.5 17.5h7M9.5 21h5"/>' },
+  // Biomedicina vem ANTES de medicina: "biomedicina" contém "medicina" e cairia na regra errada.
+  { re: /biomedicin/i, nome: 'Biomedicina', frase: 'Cada lâmina, cada análise, cada madrugada no laboratório levou você [até aqui].',
+    svg: '<path d="M10 4.5h3.5v5H10zM11.8 9.5v3"/><path d="M8 20.5h9M7 17.5c0-3 2.2-5 4.8-5s4.8 2 4.8 5"/><path d="M5.5 12.5h3"/>' },
+  { re: /medicina|m[eé]dic/i, nome: 'Medicina', frase: 'Anos de plantão e de entrega. Hoje a bata dá lugar ao {traje de gala}.',
+    svg: '<path d="M12 3v18"/><path d="M12 5.5c3 0 3 2.6 0 2.6s-3 2.6 0 2.6 3 2.6 0 2.6-3 2.6 0 2.6"/><path d="M9.5 3h5"/>' },
+  { re: /nutri[cç][aã]o/i, nome: 'Nutrição', frase: 'Você aprendeu a cuidar das pessoas pelo que elas comem. Hoje o jantar é [em sua homenagem].',
+    svg: '<path d="M12 8c-3 0-5 2.2-5 5.4C7 17 9.5 21 12 21s5-4 5-7.6C17 10.2 15 8 12 8Z"/><path d="M12 8c0-2.2 1.4-4 3.5-4.5C15.5 6 14.2 7.7 12 8Z" class="cheio"/>' },
+  { re: /fisioterap/i, nome: 'Fisioterapia', frase: 'Você devolveu movimento a tanta gente. Agora é a sua vez de {dançar}.',
+    svg: '<circle cx="13.5" cy="5" r="2"/><path d="M14 8 10.5 11l3 2.5.5 5M10.5 11 6.5 12M13.5 13.5 18 15M14 18.5l-3.5 2.5"/>' },
+  { re: /psicolog/i, nome: 'Psicologia', frase: 'Você escutou histórias demais para não ter [a sua celebrada].',
+    svg: '<path d="M8 6v5a4 4 0 0 0 8 0V6M12 6v15M8.5 21h7"/>' },
+  { re: /direito|jur[ií]dic/i, nome: 'Direito', frase: 'Cada código estudado, cada tese defendida — a sentença de hoje é {comemorar}.',
+    svg: '<path d="M12 4v16M7 20.5h10M5 8h14M12 4.5 5 8M12 4.5 19 8"/><path d="M5 8 2.8 13h4.4L5 8ZM19 8l-2.2 5h4.4L19 8Z"/>' },
+  { re: /arquitetur/i, nome: 'Arquitetura', frase: 'Você passou anos desenhando o espaço dos outros. Este aqui é [para você].',
+    svg: '<path d="M12 3.5 4 20.5M12 3.5l8 17M7.5 14.5h9"/><path d="M12 3.5a1.6 1.6 0 1 0 0-.1Z" class="cheio"/>' },
+  { re: /odontolog/i, nome: 'Odontologia', frase: 'Você devolveu o sorriso de muita gente. Hoje o sorriso é {o seu}.',
+    svg: '<path d="M8 3.8c-2.4 0-3.8 1.9-3.8 4.6 0 4.3 1.7 12.6 3.6 12.6 1.4 0 1.3-5.3 4.2-5.3s2.8 5.3 4.2 5.3c1.9 0 3.6-8.3 3.6-12.6 0-2.7-1.4-4.6-3.8-4.6-1.9 0-2.6 1.1-4 1.1s-2.1-1.1-4-1.1Z"/>' },
+  { re: /farm[aá]c/i, nome: 'Farmácia', frase: 'Da fórmula ao balcão, você cuidou de gente. Hoje [cuidamos de você].',
+    svg: '<path d="M8 4h8M9.5 4c0 4-3 4.5-3 9.5a5.5 5.5 0 0 0 11 0c0-5-3-5.5-3-9.5"/><path d="M11 9.5c2.5 0 2.5 2.4 0 2.4s-2.5 2.4 0 2.4"/>' },
+  { re: /veterin[aá]r/i, nome: 'Veterinária', frase: 'Você cuidou de quem não agradece com palavras. Hoje agradecemos com uma {festa}.',
+    svg: '<circle cx="7" cy="9" r="1.8" class="cheio"/><circle cx="11" cy="6.5" r="1.8" class="cheio"/><circle cx="15.5" cy="7.5" r="1.8" class="cheio"/><circle cx="18" cy="11.5" r="1.8" class="cheio"/><path d="M12.5 11.5c-3 0-5.5 2.4-5.5 5 0 2 1.6 3 3.4 3 1.4 0 1.6-.7 2.6-.7s1.2.7 2.6.7c1.8 0 3.4-1 3.4-3 0-2.6-2.5-5-5.5-5Z"/>' },
+  { re: /educa[cç][aã]o f[ií]sica/i, nome: 'Educação Física', frase: 'Você ensinou o corpo a ir além. A linha de chegada tem [música e brinde].',
+    svg: '<path d="M4 9v6M7 7v10M17 7v10M20 9v6M7 12h10"/>' },
+  { re: /engenhar/i, nome: 'Engenharia', frase: 'Cada cálculo, cada projeto, cada noite virada — a estrutura {ficou de pé}.',
+    svg: '<circle cx="12" cy="12" r="3.4"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3M6 6l2.1 2.1M15.9 15.9 18 18M18 6l-2.1 2.1M8.1 15.9 6 18"/>' },
+  { re: /pedagog|letras|hist[oó]ria|geografia/i, nome: 'Licenciatura', frase: 'Você formou gente antes de se formar. Hoje a turma é [a sua].',
+    svg: '<path d="M12 6.5C10.3 5.2 8 4.5 4 4.5v13c4 0 6.3.7 8 2 1.7-1.3 4-2 8-2v-13c-4 0-6.3.7-8 2Z"/><path d="M12 6.5v13"/>' },
+  { re: /administra[cç][aã]o|cont[aá]beis|economia|gest[aã]o/i, nome: 'Gestão', frase: 'Você aprendeu a fazer as contas fecharem. Esta noite é o {melhor investimento}.',
+    svg: '<path d="M4 20h16M7 20v-6M12 20V8M17 20v-9"/><path d="m5.5 9 5-4.5 4 3 4.5-4"/>' },
+  { re: /.*/, nome: 'sua turma', frase: 'Foram anos de estudo para chegar até aqui. A noite é [à altura da conquista].',
+    svg: '<path d="M12 3.5 22 8l-10 4.5L2 8l10-4.5Z"/><path d="M6.5 10.2V15c0 1.5 2.5 2.7 5.5 2.7s5.5-1.2 5.5-2.7v-4.8"/><path d="M22 8v5.5M22 13.5a1 1 0 1 0 0 3.2"/>' },
+];
+
+const cursoDe = (nome) => CURSOS.find((c) => c.re.test(nome || '')) || CURSOS[CURSOS.length - 1];
+
+// ---------- cláusulas do contrato --------------------------------------------
+// Texto igual ao do termo de adesão (adesao-contrato.template.ts). Toda citação
+// na tela vira um "?" que abre o trecho, para o formando conferir sem sair daqui.
+const CLAUSULAS = {
+  '4.1': 'Os valores das parcelas discriminados no ORÇAMENTO (ANEXO I) e no quadro de pagamento correspondem ao valor pleno da contraprestação. A título de incentivo à pontualidade, a CONTRATADA concede ao CONTRATANTE desconto de 20% sobre o valor de cada parcela que for integralmente quitada até a respectiva data de vencimento.',
+  '4.2': 'O desconto tem natureza de desconto condicional, apurado parcela a parcela, e não constitui, sob nenhuma hipótese, multa, penalidade ou cláusula penal. A ausência do desconto decorre exclusivamente do não implemento da condição — o pagamento até o vencimento — e restringe-se à parcela paga em atraso.',
+  '4.3': 'Não quitada a parcela até o vencimento, esta tornar-se-á exigível pelo seu valor pleno, sem o desconto, acrescida de correção monetária pelo IPCA e juros de mora de 1% (um por cento) ao mês, calculados pro rata die.',
+  '4.4': 'Os instrumentos de cobrança informarão, para cada parcela, o valor com pontualidade e o respectivo valor pleno.',
+  '8.1': 'O CONTRATANTE que estiver inadimplente com quaisquer parcelas do contrato terá seus direitos suspensos, ficando impedido de participar de eventos, ensaios e cerimônias (incluindo festa de meio de curso, foto-convite, pré-eventos e formatura), bem como de retirar convites ou benefícios, até a regularização total do débito.',
+  '8.2': 'A inscrição do CONTRATANTE em cadastro de proteção ao crédito será precedida de notificação por escrito, com prazo de 15 (quinze) dias para regularização.',
+  '8.3': 'A parte que der causa à cobrança extrajudicial de valores devidos por força deste contrato arcará com honorários de cobrança de 10% (dez por cento) sobre o valor exigido, obrigação que se aplica reciprocamente a ambas as partes.',
+  '17.1': 'Este contrato poderá ser rescindido: (a) por acordo entre as partes; (b) por inadimplência superior a 90 (noventa) dias; ou (c) por descumprimento comprovado de suas cláusulas.',
+  '17.3': 'Toda reprogramação da forma de pagamento acordada gera uma taxa de alteração fixa no valor de R$ 75,00 (setenta e cinco reais).',
+};
+
+// Citação com o "?" ao lado. O balão abre no hover e também no foco pelo
+// teclado; no celular, o toque no "?" resolve.
+function clausula(numero, prefixo = 'cláusula ') {
+  const texto = CLAUSULAS[numero];
+  if (!texto) return `<small>(cláusula ${escapar(numero)})</small>`;
+  return `<span class="cita">(${escapar(prefixo)}${escapar(numero)})<button class="ajuda" type="button" aria-label="Ver a cláusula ${escapar(numero)}">?</button><span class="balao" role="tooltip"><b>Cláusula ${escapar(numero)}</b>${escapar(texto)}</span></span>`;
+}
+
+// O balão da cláusula é posicionado na janela (position: fixed), porque quase
+// sempre ele nasce dentro de algo que rola — a folha, uma lista — e ali seria
+// cortado pela borda da caixa. Aqui a conta é: centralizado na citação, acima
+// dela se couber, senão abaixo, sempre dentro da tela. A seta acompanha.
+function abrirBalao(cita) {
+  const balao = cita.querySelector('.balao');
+  if (!balao) return;
+  fecharBaloes();
+  balao.classList.remove('abaixo');
+  balao.classList.add('aberto');
+
+  const margem = 12;
+  const c = cita.getBoundingClientRect();
+  const b = balao.getBoundingClientRect();
+  const meio = c.left + c.width / 2;
+
+  const esquerda = Math.max(margem, Math.min(meio - b.width / 2, innerWidth - b.width - margem));
+  let topo = c.top - b.height - 10;
+  if (topo < margem) { topo = c.bottom + 10; balao.classList.add('abaixo'); }
+
+  balao.style.left = `${Math.round(esquerda)}px`;
+  balao.style.top = `${Math.round(topo)}px`;
+  balao.style.setProperty('--seta-x', `${Math.round(Math.max(14, Math.min(meio - esquerda, b.width - 14)))}px`);
+}
+
+const fecharBaloes = () => document.querySelectorAll('.balao.aberto').forEach((b) => b.classList.remove('aberto'));
+const citaDe = (alvo) => (alvo instanceof Element ? alvo.closest('.cita') : null);
+
+document.addEventListener('mouseover', (e) => { const c = citaDe(e.target); if (c) abrirBalao(c); });
+document.addEventListener('mouseout', (e) => {
+  const c = citaDe(e.target);
+  if (c && !c.contains(e.relatedTarget)) fecharBaloes();
+});
+document.addEventListener('focusin', (e) => { const c = citaDe(e.target); if (c) abrirBalao(c); else fecharBaloes(); });
+// No celular não há hover: quem abre é o toque no "?". O toque sempre abre (e
+// nunca alterna), porque o navegador emula um mouseover antes do clique — se
+// alternasse, o balão abriria no emulado e fecharia no clique. Para fechar,
+// toca-se fora, rola a tela ou aperta Esc.
+document.addEventListener('click', (e) => {
+  const ajuda = e.target instanceof Element ? e.target.closest('.ajuda') : null;
+  if (ajuda) {
+    e.preventDefault();
+    return abrirBalao(ajuda.closest('.cita'));
+  }
+  if (!citaDe(e.target)) fecharBaloes();
+});
+// rolou ou redimensionou, a âncora saiu do lugar: some
+document.addEventListener('scroll', fecharBaloes, true);
+addEventListener('resize', fecharBaloes);
+
+// Rabisco de caneta em volta da palavra, como no hero do site de formaturas.
+// Vai atrás do texto, esticado pelo tamanho do span.
+const RABISCO = `<svg class="rabisco" viewBox="0 0 200 64" preserveAspectRatio="none" aria-hidden="true">
+  <path d="M167 12C143 5 107 3 76 5 45 7 14 14 8 27c-6 13 20 25 55 30 35 5 79 4 108-3 22-5 32-13 24-21-6-6-22-11-41-14" />
+</svg>`;
+
+// A frase do curso vem marcada: [assim] ganha o rabisco, {assim} vem na manuscrita.
+function frasePintada(texto) {
+  return escapar(texto)
+    .replace(/\[([^\]]+)\]/g, (_, p) => `<span class="dest-circulo">${p}${RABISCO}</span>`)
+    .replace(/\{([^}]+)\}/g, (_, p) => `<span class="dest-manu">${p}</span>`);
+}
+
+function moldura(conteudo, sub) {
+  const t = estado.eu?.turma;
+  const aba = ABAS.find((a) => a.id === estado.aba);
+  const atrasadas = estado.financeiro?.boletos.filter((b) => b.status === 'em_atraso').length || 0;
+  const naoLidas = estado.avisos?.naoLidas || 0;
+
+  app.className = `app${estado.menuAberto ? ' menu-aberto' : ''}`;
+  app.innerHTML = `
+    <aside class="lateral">
+      <div class="lateral-marca"><img src="/logo-formaturas.png" alt="Indaiá Formaturas" /></div>
+      <div class="lateral-pessoa">
+        <div class="nome">${escapar(semMarca(estado.eu?.nome))}</div>
+        <div class="turma">${escapar(t ? `Turma ${t.codigo} · ${t.cidade}` : '')}</div>
+      </div>
+      <nav>
+        ${ABAS.map((a) => `
+          <button data-aba="${a.id}" class="${estado.aba === a.id ? 'ativo' : ''}">
+            ${ICONES[a.id]}<span>${a.rotulo}</span>
+            ${a.id === 'financeiro' && atrasadas ? `<span class="aviso">${atrasadas}</span>` : ''}
+          </button>`).join('')}
+      </nav>
+      <div class="lateral-assinatura">transformando histórias.</div>
+      <div class="lateral-rodape">
+        <button id="meus-pedidos">${ICONES.pedidos}<span>Meus pedidos</span></button>
+        <button id="meus-dados">${ICONES.pessoa}<span>Meus dados</span></button>
+        <button id="duvidas">${ICONES.duvida}<span>Dúvidas frequentes</span></button>
+        ${instalado() ? '' : `<button id="instalar">${ICONES.celular}<span>Instalar no celular</span></button>`}
+        <button id="tema">${ICONES.tema}<span>${temaAtual() === 'escuro' ? 'Tema claro' : 'Tema escuro'}</span></button>
+        <button id="zap">${ICONES.zap}<span>Falar com a gente</span></button>
+        <button id="sair">${ICONES.sair}<span>Sair</span></button>
+      </div>
+    </aside>
+    <div class="cortina" id="cortina"></div>
+    <div class="conteudo">
+     <div class="faixa-central">
+      <header class="topo">
+        <div class="topo-interno">
+          <button class="abrir-menu" id="abrir-menu" aria-label="Abrir menu">${ICONES.menu}</button>
+          <div>
+            <h1>${aba?.titulo || ''}</h1>
+            ${sub ? `<div class="sub">${escapar(sub)}</div>` : ''}
+          </div>
+          <div class="topo-nome">
+            <span class="kicker">Formando</span>
+            <strong>${escapar(semMarca(estado.eu?.nome))}</strong>
+          </div>
+          <button class="sino" id="sino" aria-label="Avisos">
+            ${ICONES.sino}
+            ${naoLidas ? `<span class="contador">${naoLidas > 9 ? '9+' : naoLidas}</span>` : ''}
+          </button>
+        </div>
+      </header>
+      <main>${conteudo}</main>
+     </div>
+    </div>`;
+
+  app.querySelectorAll('[data-aba]').forEach((b) => b.addEventListener('click', () => { estado.menuAberto = false; irPara(b.dataset.aba); }));
+  app.querySelector('#sino').addEventListener('click', telaAvisos);
+  app.querySelector('#meus-pedidos').addEventListener('click', telaMeusPedidos);
+  app.querySelector('#meus-dados').addEventListener('click', telaMeusDados);
+  app.querySelector('#duvidas').addEventListener('click', telaPerguntas);
+  app.querySelector('#instalar')?.addEventListener('click', telaInstalar);
+  app.querySelector('#tema').addEventListener('click', alternarTema);
+  app.querySelector('#zap').addEventListener('click', abrirWhatsapp);
+  app.querySelector('#sair').addEventListener('click', sair);
+  app.querySelector('#abrir-menu').addEventListener('click', () => { estado.menuAberto = true; app.classList.add('menu-aberto'); });
+  app.querySelector('#cortina').addEventListener('click', () => { estado.menuAberto = false; app.classList.remove('menu-aberto'); });
+}
+
+function notaRodape() {
+  if (!estado.config?.modoDev) return '';
+  // Na página publicada não existe "ambiente local": é uma demonstração aberta.
+  const onde = estado.config.demo ? 'Versão de demonstração.' : 'Ambiente de teste local.';
+  return `<p class="rodape-nota">${onde} ${escapar(estado.config.avisoDados || '')} Data simulada: ${dataCurta(estado.config.hojeSimulado)}.</p>`;
+}
+
+// ---------- pedaços reaproveitados ------------------------------------------
+// A próxima cobrança a pagar: vencida primeiro, depois o que já tem boleto,
+// depois o que ainda vai ser gerado. Parcela que está num boleto único não conta
+// — quem conta é o boleto único.
+function proximaParaPagar() {
+  const bs = estado.financeiro?.boletos || [];
+  const ordem = { em_atraso: 0, em_analise: 1, em_aberto: 2, agendado: 3, nao_gerado: 3 };
+  return bs.filter((b) => !b.unico && b.status in ordem)
+    .sort((a, b) => (ordem[a.status] - ordem[b.status]) || a.vencimento.localeCompare(b.vencimento))[0];
+}
+
+function cartaoDestaque(b) {
+  if (!b) return '';
+  const atraso = b.status === 'em_atraso';
+  const temBoleto = b.status === 'em_aberto' || atraso;
+  return `
+    <div class="cartao destaque">
+      <div class="rotulo">${atraso ? `${nomeCobranca(b)} em atraso` : b.unico ? 'Boleto único' : 'Próxima parcela'}</div>
+      <div class="valor-grande">${brl(aPagar(b))}</div>
+      <div class="quando">${escapar(apoioCobranca(b))} · ${atraso ? `venceu em ${dataCurta(b.vencimento)}` : `vence em ${dataCurta(b.vencimento)}`}</div>
+      <div class="acoes"><button class="botao" data-boleto="${escapar(b.id)}">${atraso ? 'Gerar 2ª via' : temBoleto ? 'Ver boleto' : 'Ver parcela'}</button></div>
+    </div>`;
+}
+
+function itemBoleto(b) {
+  const atraso = b.status === 'em_atraso';
+  // Cláusula 4.4: enquanto dá para pagar em dia, a linha mostra os dois valores —
+  // o com pontualidade e o pleno. Vencida já não tem desconto: mostra o que se
+  // deve hoje.
+  const mostrarPleno = ['em_aberto', 'agendado', 'nao_gerado'].includes(b.status) && !b.valorAtualizado && b.valorPleno > b.valor;
+  const faixa = b.unico ? `${maiuscula(rotuloParcelas(b.unico.parcelas))} · ` : '';
+  const quando = b.status === 'pago' ? `${faixa}${b.unico ? 'pago' : 'Pago'} em ${dataCurta(b.pagoEm)}`
+    : b.status === 'em_analise' ? `Venceu em ${dataCurta(b.vencimento)} · comprovante em análise`
+    : atraso ? `${faixa}${b.unico ? 'venceu' : 'Venceu'} em ${dataCurta(b.vencimento)}`
+    : `${faixa}${b.unico ? 'vence' : 'Vence'} em ${dataCurta(b.vencimento)}`;
+  return `
+    <button class="item" data-boleto="${escapar(b.id)}">
+      <div class="quando">
+        <strong>${escapar(nomeCobranca(b))}${estado.visao === 'mes' ? '' : ` · ${mesAno(b.vencimento)}`}</strong>
+        <span>${quando}</span>
+        <br><span class="marca-status s-${b.status}">${ROTULO_STATUS[b.status]}</span>
+        ${b.unicoAtivo ? '<span class="marca-status s-no_unico">No boleto único</span>' : ''}
+        ${b.contestacao ? '<span class="marca-status s-contestada">Contestada</span>' : ''}
+        ${b.qtdComprovantes ? '<span class="marca-status s-comprovante">Comprovante enviado</span>' : ''}
+      </div>
+      <div class="quanto">
+        ${mostrarPleno ? `<span class="pleno" title="valor pleno, sem o desconto de pontualidade">${brl(b.valorPleno + (b.taxaBoleto || 0))}</span>` : ''}
+        <b>${brl(aPagar(b))}</b>
+        ${atraso && b.encargosHoje ? '<span class="economia">com encargos e taxa</span>'
+          : b.taxaBoleto ? `<span class="economia">inclui ${brl(b.taxaBoleto)} de taxa</span>` : ''}
+      </div>
+      <div class="seta">›</div>
+    </button>`;
+}
+
+const ligarBoletos = () => app.querySelectorAll('[data-boleto]').forEach((b) => b.addEventListener('click', () => abrirBoleto(b.dataset.boleto)));
+
+
+// Primeira coisa da tela inicial: o que precisa de você agora. Sai da mesma
+// lista do sino, que já vem ordenada por urgência — aqui ficam os três
+// primeiros, para a ação não morar embaixo da foto.
+function painelAtencao() {
+  const itens = (estado.avisos?.itens || []).slice(0, 3);
+  const proxima = proximaParaPagar();
+
+  if (!itens.length) {
+    return `
+      <div class="atencao">
+        <div class="atencao-topo"><span class="kicker traco">Tudo em dia</span></div>
+        <button class="atencao-item ok" data-ir="financeiro">
+          <span class="selo">${ICONES.check}</span>
+          <span class="texto">
+            <strong>Nada pendente por aqui</strong>
+            <span>${proxima ? `A próxima parcela vence em ${dataCurta(proxima.vencimento)}.` : 'Contrato quitado.'}</span>
+          </span>
+          <span class="seta">›</span>
+        </button>
+      </div>`;
+  }
+
+  return `
+    <div class="atencao">
+      <div class="atencao-topo">
+        <span class="kicker traco">Importante</span>
+        ${estado.avisos?.itens.length > 3 ? `<button class="botao fantasma" id="ver-todos-avisos" style="width:auto;padding:6px 10px">ver todos (${estado.avisos.itens.length})</button>` : ''}
+      </div>
+      ${itens.map((n) => `
+        <button class="atencao-item ${n.tipo === 'atraso' ? 'urgente' : ''}" data-ir-aviso="${escapar(n.ir)}" ${n.billId ? `data-aviso-boleto="${escapar(n.billId)}"` : ''}>
+          <span class="selo">${ICONE_AVISO[n.tipo] || ICONES.zap}</span>
+          <span class="texto">
+            <strong>${escapar(n.titulo)}</strong>
+            <span>${escapar(n.texto)}</span>
+          </span>
+          <span class="seta">›</span>
+        </button>`).join('')}
+    </div>`;
+}
+
+function ligarPainelAtencao() {
+  app.querySelector('#ver-todos-avisos')?.addEventListener('click', telaAvisos);
+  app.querySelectorAll('[data-ir-aviso]').forEach((b) => b.addEventListener('click', async () => {
+    const destino = b.dataset.irAviso;
+    if (destino === 'pedidos') return telaMeusPedidos();
+    await irPara(destino);
+    if (b.dataset.avisoBoleto) abrirBoleto(b.dataset.avisoBoleto);
+  }));
+}
+
+// ---------- aba: início ------------------------------------------------------
+function abaInicio() {
+  const t = estado.turma;
+  const { resumo } = estado.financeiro;
+  const proxima = proximaParaPagar();
+  const dias = diasAte(t.dataEvento);
+  const curso = cursoDe(estado.eu?.curso);
+
+  moldura(`
+    ${painelAtencao()}
+
+    <div class="frase">
+      <div class="simbolo">
+        <svg viewBox="0 0 24 24" aria-hidden="true">${curso.svg}</svg>
+      </div>
+      <div>
+        <p>${frasePintada(curso.frase)}</p>
+        <div class="kicker curso">${escapar(estado.eu?.curso || curso.nome)}</div>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="kicker traco">Baile de gala</div>
+      <h2 class="serif" style="margin:6px 0 2px;font-size:32px">${dataLonga(t.dataEvento)}</h2>
+      <p style="margin:0;color:var(--texto-suave)">${escapar(t.espaco || t.cidade)} · ${escapar(t.cidade)}</p>
+      <div class="contagem">
+        <div><b>${dias}</b><span>dias para o baile</span></div>
+        <div><b>${t.formandos}</b><span>formandos na turma</span></div>
+        <div><b>${resumo.parcelasPagas}/${resumo.parcelas}</b><span>parcelas pagas</span></div>
+      </div>
+    </div>
+
+    <div class="colunas duas">
+      ${cartaoDestaque(proxima)}
+      <div class="cartao">
+        <div class="kicker">Seu contrato</div>
+        <div class="dado"><span>Total</span><b>${brl(resumo.contratado)}</b></div>
+        <div class="dado"><span>Pago</span><b>${brl(resumo.pago)}</b></div>
+        <div class="dado"><span>Em aberto</span><b>${brl(resumo.emAberto + resumo.emAtraso + (resumo.emAnalise || 0) + resumo.aEmitir)}</b></div>
+        <div class="barra"><i style="width:${(resumo.contratado ? Math.min(100, (resumo.pago / resumo.contratado) * 100) : 0).toFixed(1)}%"></i></div>
+        <button class="botao secundario" data-ir="financeiro">Ver financeiro</button>
+      </div>
+    </div>
+
+    ${notaRodape()}
+  `, estado.eu?.turma ? `Turma ${estado.eu.turma.codigo} · ${escapar(t.curso)}` : '');
+
+  ligarBoletos();
+  ligarPainelAtencao();
+  app.querySelectorAll('[data-ir]').forEach((b) => b.addEventListener('click', () => irPara(b.dataset.ir)));
+}
+
+// ---------- aba: financeiro --------------------------------------------------
+// Mesmos recortes dos chips da Área do Cliente (Todas · Vencidas · Aguardando ·
+// Pendentes · Pagas), com os nomes que valem para formatura.
+const FILTROS = [
+  { id: 'todas', rotulo: 'Todas', teste: () => true },
+  { id: 'vencidas', rotulo: 'Vencidas', teste: (b) => b.status === 'em_atraso' || b.status === 'em_analise' },
+  { id: 'aguardando', rotulo: 'Aguardando', teste: (b) => b.status === 'em_aberto' },
+  { id: 'programadas', rotulo: 'Programadas', teste: (b) => b.status === 'agendado' || b.status === 'nao_gerado' },
+  { id: 'pagas', rotulo: 'Pagas', teste: (b) => b.status === 'pago' },
+];
+
+function abaFinanceiro() {
+  const { resumo, boletos } = estado.financeiro;
+  // o boleto único mora numa seção própria; a lista é das parcelas do contrato
+  const parcelas = boletos.filter((b) => !b.unico);
+  // boleto único que expirou some daqui: as parcelas dele voltam para a lista
+  const unicos = boletos.filter((b) => b.unico && b.status === 'em_aberto');
+  const pct = resumo.contratado ? Math.min(100, (resumo.pago / resumo.contratado) * 100) : 0;
+  const filtro = FILTROS.find((f) => f.id === estado.filtro) || FILTROS[0];
+  const lista = parcelas.filter(filtro.teste).sort((a, b) => (filtro.id === 'pagas' ? -1 : 1) * a.vencimento.localeCompare(b.vencimento));
+  const proxima = proximaParaPagar();
+  const podeAntecipar = temRecurso('boletoUnico')
+    && parcelas.some((b) => !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status));
+
+  const emAberto = resumo.emAberto + resumo.emAtraso + (resumo.emAnalise || 0) + resumo.aEmitir;
+  // Parcelas do contrato ainda não pagas — o par do valor "Em aberto" ao lado.
+  const aPagarNoContrato = Math.max(0, (resumo.parcelas || parcelas.length) - resumo.parcelasPagas);
+  // Quanto do contrato ainda não virou boleto — a nota do rodapé só aparece se
+  // houver diferença, para não poluir quem já tem tudo emitido.
+  const porGerar = Math.max(0, (resumo.parcelas || parcelas.length) - parcelas.length);
+  const atrasadas = boletos.filter((b) => b.status === 'em_atraso');
+  const emAnalise = boletos.filter((b) => b.status === 'em_analise');
+  const negociar = atrasadas.length > MAX_VENCIDAS_SEM_EQUIPE;
+  const diasMaisAntiga = atrasadas.length
+    ? Math.max(...atrasadas.map((b) => Math.abs(diasAte(b.vencimento))))
+    : 0;
+  // prazo de rescisão por inadimplência, do termo de adesão (cláusula 17.1)
+  const { diasInadimplenciaRescisao = 90 } = estado.config?.contrato || {};
+
+  moldura(`
+    <div class="hero-financeiro">
+      <div class="kicker">Total do contrato · turma ${escapar(estado.eu?.turma?.codigo || '')}</div>
+      <div class="total">${brl(resumo.contratado)}</div>
+      <div class="par">
+        <div>
+          <div class="rot">Pago</div>
+          <b class="ok">${brl(resumo.pago)}</b>
+          <small>${resumo.parcelasPagas} parcela${resumo.parcelasPagas === 1 ? '' : 's'}</small>
+        </div>
+        <div>
+          <div class="rot">Em aberto</div>
+          <b>${brl(emAberto)}</b>
+          <!-- Parcelas do CONTRATO, para casar com o valor acima, que é o que
+               falta pagar do contrato inteiro. A lista abaixo mostra menos (a
+               cobrança sai em lotes) — quem explica isso é a nota do rodapé. -->
+          <small>${aPagarNoContrato} parcela${aPagarNoContrato === 1 ? '' : 's'}</small>
+        </div>
+      </div>
+      <div class="trilho"><i style="width:${pct.toFixed(1)}%"></i></div>
+      <div class="pct">${pct.toFixed(0)}% pago</div>
+      ${atrasadas.length > 1 ? `
+        <div class="atraso">
+          <span>${atrasadas.length} parcela${atrasadas.length > 1 ? 's' : ''} em atraso</span>
+          <b>${brl(resumo.emAtraso)}</b>
+        </div>` : ''}
+      ${proxima ? `
+        <div class="proxima ${proxima.status === 'em_atraso' ? 'atrasada' : ''}">
+          <div>
+            <div class="rot" style="font-size:13px;color:rgba(242,233,218,.6)">${proxima.status === 'em_atraso' ? `${escapar(nomeCobranca(proxima))} em atraso` : proxima.unico ? 'Boleto único' : 'Próxima parcela'}</div>
+            <div class="valor">${brl(aPagar(proxima))}</div>
+            <div class="quando">${escapar(apoioCobranca(proxima))} · ${proxima.status === 'em_atraso' ? 'venceu' : 'vence'} em ${dataCurta(proxima.vencimento)}${proxima.status === 'em_atraso' && proxima.encargosHoje ? ' · valor com encargos até hoje' : ''}</div>
+          </div>
+          <button class="botao" data-boleto="${escapar(proxima.id)}">${proxima.status === 'em_atraso' && temRecurso('segundaVia') ? 'Gerar 2ª via' : proxima.status === 'em_aberto' ? 'Ver boleto' : 'Ver parcela'}</button>
+        </div>` : ''}
+    </div>
+
+    ${atrasadas.length ? `
+      <div class="faixa alerta">
+        <div>
+          <b>${atrasadas.length === 1 ? 'Uma parcela vencida' : `${atrasadas.length} parcelas vencidas`}${diasMaisAntiga >= 30 ? ` — a mais antiga há ${diasMaisAntiga} dias` : ''}.</b>
+          Enquanto houver parcela em aberto, a participação nos eventos, ensaios e a retirada de
+          convites ficam suspensas ${clausula("8.1")}.
+          ${diasMaisAntiga >= 60 ? ` Acima de ${diasInadimplenciaRescisao} dias o contrato pode ser rescindido ${clausula("17.1", "")}.` : ''}
+          <b>Já pagou?</b> Anexe o comprovante na parcela que a equipe confere.
+        </div>
+      </div>
+      <div class="acoes ${negociar ? 'dupla' : ''}" style="margin-bottom:12px">
+        ${negociar ? '<button class="botao secundario" id="negociar">Quero falar com a equipe e negociar</button>' : ''}
+        <button class="botao secundario" data-boleto="${escapar(atrasadas[0].id)}">${atrasadas.length === 1 ? 'Ver a parcela vencida' : 'Ver a vencida mais antiga'}</button>
+      </div>` : ''}
+
+    ${emAnalise.length ? `
+      <div class="faixa ouro">
+        <div>${emAnalise.length === 1 ? 'Uma parcela vencida está' : `${emAnalise.length} parcelas vencidas estão`}
+        <b>em análise</b>: você anexou o comprovante e a equipe está conferindo. Assim que a baixa sair, a
+        situação muda sozinha.</div>
+      </div>` : ''}
+
+    <div class="acoes-financeiro">
+      ${podeAntecipar ? `
+        <button class="acao-financeira" id="antecipar">
+          <span class="ico">${ICONES.antecipar}</span>
+          <span><strong>Antecipar ou quitar</strong><span class="desc">Boleto único na hora</span></span>
+        </button>` : ''}
+      <button class="acao-financeira" id="ver-extrato">
+        <span class="ico">${ICONES.extrato}</span>
+        <span><strong>Extrato e comprovantes</strong><span class="desc">O que você pagou e o que anexou</span></span>
+      </button>
+      <button class="acao-financeira" id="informe-ir">
+        <span class="ico">${ICONES.informe}</span>
+        <span><strong>Informe de pagamentos</strong><span class="desc">Para a declaração anual</span></span>
+      </button>
+    </div>
+
+    ${unicos.length ? `
+      <div class="secao-titulo">Boleto único</div>
+      <div class="lista" style="margin-bottom:14px">${unicos.map(itemBoleto).join('')}</div>` : ''}
+
+    <div class="titulo-linha">
+      <div class="secao-titulo" style="margin:0">Minhas parcelas</div>
+      <div class="visao">
+        ${VISOES.map((v) => `<button data-visao="${v.id}" class="${v.id === estado.visao ? 'ativo' : ''}">${v.rotulo}</button>`).join('')}
+      </div>
+    </div>
+    <div class="filtros">
+      ${FILTROS.map((f) => {
+        const n = parcelas.filter(f.teste).length;
+        // chip com contagem zero só ocupa espaço para dizer que não há nada
+        if (!n && f.id !== 'todas' && f.id !== estado.filtro) return '';
+        return `<button data-filtro="${f.id}" class="${f.id === estado.filtro ? 'ativo' : ''}"><i class="ponto p-${f.id}"></i>${f.rotulo} · ${n}</button>`;
+      }).join('')}
+    </div>
+    ${lista.length ? agruparParcelas(lista)
+      : '<div class="cartao plano"><div class="vazio">Nenhuma parcela nesta situação.</div></div>'}
+
+    ${boletos.some((b) => b.taxaBoleto) ? `<p class="rodape-nota">Cada boleto soma a <b>taxa administrativa de gestão de conta</b> prevista no seu contrato.</p>` : ''}
+    ${porGerar ? `<p class="rodape-nota">Seu contrato tem <b>${resumo.parcelas} parcelas</b>. Aqui aparecem as <b>${parcelas.length}</b> já emitidas — as outras ${porGerar} entram na lista conforme os boletos forem gerados. Nada a fazer por enquanto.</p>` : ''}
+    <p class="rodape-nota">As parcelas <b>programadas</b> ainda não têm boleto — ele é gerado alguns dias antes do vencimento. Para pagar antes, use <b>Antecipar ou quitar</b>: o boleto único sai na hora.</p>
+    ${notaRodape()}
+  `, `${resumo.parcelasPagas} de ${resumo.parcelas} parcelas pagas`);
+
+  app.querySelectorAll('[data-filtro]').forEach((b) => b.addEventListener('click', () => { estado.filtro = b.dataset.filtro; abaFinanceiro(); }));
+  app.querySelectorAll('[data-visao]').forEach((b) => b.addEventListener('click', () => { guardarVisao(b.dataset.visao); abaFinanceiro(); }));
+  app.querySelector('#antecipar')?.addEventListener('click', simulacaoAntecipacao);
+  app.querySelector('#negociar')?.addEventListener('click', formularioNegociacao);
+  app.querySelector('#ver-extrato')?.addEventListener('click', telaExtrato);
+  app.querySelector('#informe-ir')?.addEventListener('click', telaInformeIr);
+  ligarBoletos();
+}
+
+// ---------- antecipar / quitar ----------------------------------------------
+// Decisão da equipe: o portal emite o boleto único na hora, sem aprovação caso a
+// caso. A conta vem do servidor (/financeiro/antecipar/simular) — é a mesma que
+// gera o boleto, então o valor da simulação é o valor do boleto. Parcela em dia
+// entra com o desconto de pontualidade (4.1); vencida, pelo pleno com os
+// encargos até o vencimento do boleto único (4.3).
+async function simulacaoAntecipacao() {
+  const abertas = estado.financeiro.boletos
+    .filter((b) => !b.unico && !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status))
+    .sort((a, b) => a.parcela - b.parcela);
+  const vencidas = abertas.filter((b) => b.status === 'em_atraso');
+
+  const opcoes = [
+    { id: '3', rotulo: 'Próximas 3 parcelas', lista: abertas.slice(0, 3) },
+    { id: '6', rotulo: 'Próximas 6 parcelas', lista: abertas.slice(0, 6) },
+    { id: '12', rotulo: 'Próximas 12 parcelas', lista: abertas.slice(0, 12) },
+    { id: 'tudo', rotulo: 'Quitar o contrato', lista: abertas },
+  ]
+    // sem opção repetida: com 5 parcelas em aberto, "6" e "12" seriam o mesmo que quitar
+    .filter((o) => o.lista.length && (o.id === 'tudo' || o.lista.length < abertas.length));
+
+  if (!opcoes.length) return avisar('Suas parcelas em aberto já estão num boleto único');
+
+  abrirFolha('<div class="vazio">Calculando…</div>');
+  let sims;
+  try {
+    sims = await Promise.all(opcoes.map((o) => chamar('/financeiro/antecipar/simular', {
+      method: 'POST', body: JSON.stringify({ billIds: o.lista.map((b) => b.id) }),
+    })));
+  } catch { return abrirFolha('<div class="vazio">Não foi possível simular agora.</div>'); }
+
+  abrirFolha(`
+    <h2>Antecipar ou <em>quitar</em></h2>
+    <div class="sub">Escolha o que pagar e o boleto único sai na hora, com vencimento em ${sims[0].unico.diasParaVencer} dias.
+    Parcela em dia mantém o desconto de pontualidade ${clausula("4.1")}.</div>
+
+    ${vencidas.length ? `<div class="faixa alerta"><div>${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'}
+      pelo valor pleno, corrigido pelo IPCA e com juros de mora de 1% ao mês até o vencimento do boleto único ${clausula("4.3")}.</div></div>` : ''}
+
+    <div class="lista-antecipa">
+      ${opcoes.map((o, i) => `
+        <button class="opcao-antecipa" data-opcao="${i}">
+          <div class="quando">
+            <strong>${o.rotulo}</strong>
+            <span>${maiuscula(rotuloParcelas(sims[i].unico.parcelas))}</span>
+          </div>
+          <div class="quanto">
+            <b>${brl(sims[i].totalBoleto ?? sims[i].valor)}</b>
+            ${sims[i].unico.economia > 0 ? `<span class="economia">economia de ${brl(sims[i].unico.economia)}</span>` : ''}
+          </div>
+        </button>`).join('')}
+    </div>
+
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `, (el) => {
+    el.querySelectorAll('[data-opcao]').forEach((b) => b.addEventListener('click', () => {
+      const i = Number(b.dataset.opcao);
+      confirmarAntecipacao(opcoes[i], sims[i]);
+    }));
+  });
+}
+
+function confirmarAntecipacao(opcao, sim) {
+  const ps = sim.unico.parcelas;
+  const linhaParcela = (p) => `
+    <div class="dado">
+      <span>Parcela ${p.parcela}${p.vencida ? ' <small>(vencida · pleno + IPCA + juros)</small>' : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
+      <b>${brl(p.valor)}</b>
+    </div>`;
+  // quitar o contrato tem dezenas de parcelas: as primeiras à vista, o resto recolhido
+  const visiveis = ps.slice(0, 6);
+  const resto = ps.slice(6);
+
+  abrirFolha(`
+    <h2>${escapar(opcao.rotulo)}</h2>
+    <div class="sub">${maiuscula(rotuloParcelas(ps))} num boleto só</div>
+
+    <div class="secao-titulo">O que entra no boleto</div>
+    ${visiveis.map(linhaParcela).join('')}
+    ${resto.length ? `
+      <details class="faq-item" style="margin-top:8px">
+        <summary>e mais ${resto.length} parcela${resto.length > 1 ? 's' : ''}</summary>
+        <div style="padding:0 16px 8px">${resto.map(linhaParcela).join('')}</div>
+      </details>` : ''}
+
+    <div class="secao-titulo">Boleto único</div>
+    ${sim.unico.economia > 0 ? `<div class="dado"><span>Desconto de pontualidade mantido ${clausula("4.1")}</span><b class="verde">${brl(sim.unico.economia)}</b></div>` : ''}
+    ${sim.taxaBoleto ? `<div class="dado"><span>Taxa administrativa <small>(uma só, em vez de ${ps.length})</small></span><b>+ ${brl(sim.taxaBoleto)}${sim.economiaTaxa > 0 ? ` <small class="verde">poupa ${brl(sim.economiaTaxa)}</small>` : ''}</b></div>` : ''}
+    <div class="dado"><span>Vencimento</span><b>${dataCurta(sim.vencimento)}</b></div>
+    <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(sim.totalBoleto ?? sim.valor)}</b></div>
+
+    <p class="rodape-nota">As parcelas continuam com os boletos delas. Pagando o boleto único, elas são
+    quitadas de uma vez; se ele não for pago até o vencimento, é cancelado e nada muda nas parcelas.</p>
+    <div class="acoes dupla">
+      <button class="botao" id="gerar-unico">Gerar boleto único</button>
+      <button class="botao secundario" id="voltar-antecipa">Ver outras opções</button>
+    </div>
+  `, (el) => {
+    el.querySelector('#voltar-antecipa').addEventListener('click', simulacaoAntecipacao);
+    el.querySelector('#gerar-unico').addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Gerando…';
+      try {
+        const novo = await chamar('/financeiro/antecipar', {
+          method: 'POST', body: JSON.stringify({ billIds: ps.map((p) => p.id) }),
+        });
+        estado.financeiro = await chamar('/financeiro');
+        estado.avisos = await chamar('/notificacoes').catch(() => estado.avisos);
+        abaFinanceiro();
+        avisar('Boleto único gerado');
+        abrirBoleto(novo.id);
+      } catch {
+        e.target.disabled = false; e.target.textContent = 'Gerar boleto único';
+        avisar('Não foi possível gerar o boleto agora');
+      }
+    });
+  });
+}
+
+// Como a lista é mostrada: corrida, agrupada por mês ou por ano. A escolha fica
+// no navegador, como o tema.
+const VISOES = [
+  { id: 'lista', rotulo: 'Lista' },
+  { id: 'mes', rotulo: 'Mês' },
+  { id: 'ano', rotulo: 'Ano' },
+];
+
+const visaoGuardada = () => {
+  try {
+    const salva = localStorage.getItem('formando_visao');
+    if (VISOES.some((v) => v.id === salva)) return salva;
+  } catch { /* modo privado */ }
+  return 'ano';
+};
+
+function guardarVisao(v) {
+  estado.visao = v;
+  try { localStorage.setItem('formando_visao', v); } catch { /* segue sem lembrar */ }
+}
+
+const agruparParcelas = (lista) => (estado.visao === 'lista'
+  ? `<div class="lista">${lista.map(itemBoleto).join('')}</div>`
+  : estado.visao === 'mes' ? listaPorMes(lista) : listaPorAno(lista));
+
+// Por mês: abre o mês corrente e todo mês com parcela vencida.
+function listaPorMes(boletos) {
+  const meses = [...new Set(boletos.map((b) => b.vencimento.slice(0, 7)))];
+  const mesCorrente = hoje().slice(0, 7);
+  return meses.map((mes) => {
+    const doMes = boletos.filter((b) => b.vencimento.startsWith(mes));
+    const total = doMes.reduce((a, b) => a + aPagar(b), 0);
+    const atrasadas = doMes.filter((b) => b.status === 'em_atraso').length;
+    return `
+      <details class="grupo-ano" ${mes === mesCorrente || atrasadas ? 'open' : ''}>
+        <summary>
+          <span class="ano mes">${maiuscula(mesAno(`${mes}-01`))}</span>
+          <span class="qtd">${doMes.length} parcela${doMes.length === 1 ? '' : 's'}${atrasadas ? ` · <b class="atrasada">${atrasadas} em atraso</b>` : ''}</span>
+          <span class="soma">${brl(total)}</span>
+        </summary>
+        <div class="lista">${doMes.map(itemBoleto).join('')}</div>
+      </details>`;
+  }).join('');
+}
+
+// Com 30+ parcelas a lista vira um paredão: agrupa por ano e abre o ano
+// corrente e o que tiver parcela em atraso.
+function listaPorAno(boletos) {
+  const anos = [...new Set(boletos.map((b) => b.vencimento.slice(0, 4)))];
+  if (anos.length === 1) return corpoDoAno(boletos);
+
+  const anoAtual = hoje().slice(0, 4);
+  return anos.map((ano) => {
+    const doAno = boletos.filter((b) => b.vencimento.startsWith(ano));
+    const total = doAno.reduce((a, b) => a + aPagar(b), 0);
+    const atrasadas = doAno.filter((b) => b.status === 'em_atraso').length;
+    const aberto = ano === anoAtual || atrasadas > 0;
+    return `
+      <details class="grupo-ano" ${aberto ? 'open' : ''}>
+        <summary>
+          <span class="ano">${ano}</span>
+          <span class="qtd">${doAno.length} parcela${doAno.length === 1 ? '' : 's'}${atrasadas ? ` · <b class="atrasada">${atrasadas} em atraso</b>` : ''}</span>
+          <span class="soma">${brl(total)}</span>
+        </summary>
+        ${corpoDoAno(doAno)}
+      </details>`;
+  }).join('');
+}
+
+// Dentro do ano, o que já foi pago fica recolhido: quem abre o financeiro quer
+// ver o que falta, não a lista do que acabou.
+function corpoDoAno(doAno) {
+  const pagas = doAno.filter((b) => b.status === 'pago');
+  const resto = doAno.filter((b) => b.status !== 'pago');
+  if (pagas.length < 3 || !resto.length) return `<div class="lista">${doAno.map(itemBoleto).join('')}</div>`;
+
+  const somaPagas = pagas.reduce((a, b) => a + (b.valorPago || b.valor), 0);
+  return `
+    <details class="grupo-ano">
+      <summary>
+        <span class="qtd"><b>${pagas.length} parcelas pagas</b> · parcela ${pagas[0].parcela} a ${pagas[pagas.length - 1].parcela}</span>
+        <span class="soma">${brl(somaPagas)}</span>
+      </summary>
+      <div class="lista">${pagas.map(itemBoleto).join('')}</div>
+    </details>
+    <div class="lista">${resto.map(itemBoleto).join('')}</div>`;
+}
+
+// Onde o valor mudou por atraso, a tela explica a conta — e só aqui o IPCA
+// aparece pelo nome (decisão da equipe, 22/09/2026): no momento de pagar uma
+// cobrança vencida ou com valor atualizado, não como aviso solto pelo site.
+function composicaoAtraso(e, rotuloTotal, taxa = 0) {
+  return `
+    <div class="dado"><span>Valor pleno, sem o desconto ${clausula("4.1")}</span><b>${brl(e.valorPleno)}</b></div>
+    <div class="dado">
+      <span>Correção pelo IPCA <small>${e.ipcaMeses ? `(${e.ipcaMeses} ${e.ipcaMeses === 1 ? 'mês' : 'meses'} publicados pelo IBGE)` : '(nenhum mês fechado desde o vencimento)'}</small></span>
+      <b>${e.correcaoIpca ? `+ ${brl(e.correcaoIpca)}` : brl(0)}</b>
+    </div>
+    <div class="dado"><span>Juros de mora <small>(1% ao mês, ${e.diasAtraso} dia${e.diasAtraso === 1 ? '' : 's'})</small></span><b>+ ${brl(e.juros)}</b></div>
+    ${taxa ? `<div class="dado"><span>${rotuloTotal}</span><b>${brl(e.total)}</b></div>
+    <div class="dado"><span>Taxa administrativa de gestão de conta</span><b>+ ${brl(taxa)}</b></div>
+    <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(arredondar(e.total + taxa))}</b></div>`
+      : `<div class="dado"><span>${rotuloTotal}</span><b class="destaque-valor">${brl(e.total)}</b></div>`}
+    <p class="rodape-nota" style="margin-top:8px">Depois do vencimento a parcela deixa de ter o desconto
+    de pontualidade e passa a valer o pleno, corrigido pelo IPCA e com juros de mora de 1% ao mês
+    ${clausula("4.3")}.</p>`;
+}
+
+// \`individual\`: a pessoa já disse que quer pagar esta parcela sozinha, mesmo ela
+// estando num boleto único.
+async function abrirBoleto(id, { individual = false } = {}) {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let b;
+  try { b = await chamar(`/financeiro/${id}`); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir esta cobrança.</div>'); }
+
+  const atraso = b.status === 'em_atraso';
+  const semBoleto = b.status === 'agendado' || b.status === 'nao_gerado';
+  const pagavel = b.status === 'em_aberto' && b.linhaDigitavel;
+  // Não dá para impedir o pagamento de um boleto que já existe (ele pode estar
+  // salvo, impresso ou no app do banco). O que dá é segurar a linha digitável
+  // e a 2ª via desta parcela atrás de um aviso quando ela está num boleto único.
+  const noUnicoPagavel = Boolean(b.unicoAtivo) && (b.status === 'em_aberto' || atraso);
+  const segurarIndividual = noUnicoPagavel && !individual;
+
+  // o que se deve e por quê
+  let valores;
+  if (b.unico) {
+    valores = `
+      <div class="secao-titulo" style="margin-top:4px">Parcelas neste boleto</div>
+      ${b.unico.parcelas.map((p) => `
+        <div class="dado">
+          <span>Parcela ${p.parcela}${p.vencida ? ` <small>(vencida · pleno + IPCA + juros até ${dataCurta(b.vencimento)})</small>` : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
+          <b>${brl(p.valor)}</b>
+        </div>`).join('')}
+      ${b.unico.economia > 0 ? `<div class="dado"><span>Desconto de pontualidade mantido ${clausula("4.1")}</span><b class="verde">${brl(b.unico.economia)}</b></div>` : ''}
+      ${b.taxaBoleto ? `<div class="dado"><span>Taxa administrativa <small>(uma só, em vez de ${b.unico.parcelas.length})</small></span><b>+ ${brl(b.taxaBoleto)}</b></div>` : ''}
+      <div class="dado"><span>Total do boleto único</span><b class="destaque-valor">${brl(aPagar(b))}</b></div>
+      ${b.status === 'em_aberto' ? `<p class="rodape-nota" style="margin-top:8px">As parcelas continuam com os boletos delas.
+      Pagando este, elas são quitadas de uma vez; se ele não for pago até ${dataCurta(b.vencimento)}, é
+      cancelado e nada muda nas parcelas.</p>` : ''}`;
+  } else if (b.encargos) {
+    // já tem 2ª via: a conta é a da data nova
+    valores = composicaoAtraso(b.encargos, 'Valor da 2ª via', b.taxaBoleto);
+  } else if (atraso && b.encargosHoje) {
+    valores = composicaoAtraso(b.encargosHoje, 'Valor hoje', b.taxaBoleto);
+  } else if (b.status === 'pago') {
+    valores = `<div class="dado"><span>Valor pago</span><b class="destaque-valor">${brl(b.valorPago || b.valor)}</b></div>`;
+  } else {
+    valores = `
+      <div class="dado"><span>Parcela, pagando até o vencimento</span><b>${brl(b.valor)}</b></div>
+      ${b.taxaBoleto ? `<div class="dado"><span>Taxa administrativa de gestão de conta</span><b>+ ${brl(b.taxaBoleto)}</b></div>` : ''}
+      <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(aPagar(b))}</b></div>
+      ${b.valorPleno ? `<div class="dado"><span>Parcela pelo valor pleno, se pagar depois ${clausula("4.4")}</span><b>${brl(b.valorPleno)}</b></div>` : ''}`;
+  }
+
+  // o que dá para fazer com ela
+  let acoes = '';
+  if (b.status === 'em_analise') {
+    const c = (b.comprovantes || []).find((x) => x.status === 'em_analise');
+    acoes = `
+      <div class="faixa ouro" style="margin-top:16px">
+        <div><b>Comprovante em análise.</b> Você anexou ${c ? escapar(c.arquivo) : 'o comprovante'} em
+        ${c ? dataCurta(c.enviadoEm.slice(0, 10)) : 'dias atrás'} e a equipe está conferindo. Quando a baixa sair,
+        a parcela muda sozinha.${temRecurso('segundaVia') ? ' Se o pagamento não for confirmado, você ainda pode gerar a 2ª via.' : ''}</div>
+      </div>
+      ${temRecurso('segundaVia') ? '<div class="acoes"><button class="botao secundario" id="segunda-via">Gerar 2ª via mesmo assim</button></div>' : ''}`;
+  } else if (atraso && !b.unico) {
+    acoes = `
+      ${temRecurso('segundaVia') ? `
+        <div class="faixa alerta" style="margin-top:14px">
+          <div><b>O boleto vencido não é aceito pelo banco.</b> Gere a 2ª via com uma data nova — ela
+          já sai com o valor acima atualizado até o dia escolhido.</div>
+        </div>
+        <div class="acoes"><button class="botao" id="segunda-via">Gerar 2ª via</button></div>` : `
+        <div class="faixa alerta" style="margin-top:14px">
+          <div><b>O boleto vencido não é aceito pelo banco.</b> Fale com a equipe para receber a 2ª
+          via com o valor atualizado — é o mesmo valor mostrado acima, até a data do pagamento.</div>
+        </div>
+        <div class="acoes"><button class="botao secundario" id="falar-equipe">Falar com a equipe</button></div>`}`;
+  } else if (pagavel) {
+    acoes = `
+      <div class="secao-titulo">Linha digitável</div>
+      <div class="linha-digitavel" id="linha">${escapar(b.linhaDigitavel)}</div>
+      <div class="acoes dupla">
+        <button class="botao" id="copiar">Copiar linha</button>
+        <button class="botao secundario" id="pdf">Abrir PDF</button>
+      </div>
+      <div class="acoes"><button class="botao secundario" id="compartilhar">Compartilhar</button></div>`;
+  } else if (semBoleto) {
+    // Decisão da equipe: só se paga o que já tem boleto gerado. Para adiantar,
+    // o caminho é o boleto único.
+    acoes = `
+      <div class="faixa info" style="margin-top:16px"><div>O boleto desta parcela ainda não foi gerado —
+      ele fica disponível alguns dias antes do vencimento. Se quiser pagar antes, inclua esta
+      parcela num boleto único.</div></div>
+      <div class="acoes"><button class="botao secundario" id="ir-antecipar">Antecipar parcelas</button></div>`;
+  } else if (b.status === 'expirado') {
+    acoes = `
+      <div class="faixa info" style="margin-top:16px"><div>Este boleto único venceu sem pagamento e foi cancelado.
+      As parcelas dele continuam com os boletos delas, como estavam.</div></div>`;
+  } else if (b.status === 'pago') {
+    acoes = `
+      <div class="faixa info" style="margin-top:16px">${b.unico ? 'Boleto quitado.' : 'Parcela quitada.'}</div>
+      ${b.unico ? '' : '<div class="acoes"><button class="botao secundario" id="recibo">Baixar recibo desta parcela</button></div>'}`;
+  }
+
+  const comprovantesDaCobranca = (b.comprovantes || []);
+  const corpo = `
+    <h2>${escapar(nomeCobranca(b))}</h2>
+    <div class="sub">${escapar(ROTULO_STATUS[b.status])} · ${atraso ? 'venceu' : b.status === 'pago' ? 'venceu' : 'vence'} em ${dataLonga(b.vencimento)}${b.pagoEm ? ` · pago em ${dataCurta(b.pagoEm)}` : ''}</div>
+
+    ${valores}
+    <div class="dado"><span>Referente a</span><b>${escapar(descricaoAmigavel(b))}</b></div>
+
+    ${segurarIndividual ? `
+      <div class="faixa ouro" style="margin-top:16px"><div><b>Esta parcela já está num boleto único</b> que vence em
+      ${dataCurta(b.unicoAtivo.vencimento)}. Pague só um dos dois — pagando o boleto único, ela é quitada junto.
+      Se pagar esta parcela sozinha, não pague mais o boleto único.</div></div>
+      <div class="acoes dupla">
+        <button class="botao" id="ver-unico">Pagar pelo boleto único</button>
+        <button class="botao secundario" id="so-esta">Pagar só esta parcela</button>
+      </div>` : b.unicoAtivo ? `
+      <div class="faixa ouro" style="margin-top:16px"><div>Você escolheu pagar só esta parcela. Ela continua no
+      boleto único de ${dataCurta(b.unicoAtivo.vencimento)}: <b>não pague os dois</b>.</div></div>` : b.unicoAtivo && !noUnicoPagavel ? `
+      <div class="faixa info" style="margin-top:16px"><div>Esta parcela está no boleto único que vence em
+      ${dataCurta(b.unicoAtivo.vencimento)}. Pagando ele, ela é quitada junto.</div></div>
+      <div class="acoes"><button class="botao secundario" id="ver-unico">Ver o boleto único</button></div>` : ''}
+
+    ${segurarIndividual || (b.unicoAtivo && !noUnicoPagavel) ? '' : acoes}
+
+    ${semBoleto ? '' : `
+      <div class="secao-titulo">Comprovante</div>
+      ${comprovantesDaCobranca.length ? `
+        <div class="lista-comprovantes">
+          ${comprovantesDaCobranca.map((c) => `
+            <div class="comprovante">
+              <span class="ico">${ICONES.anexo}</span>
+              <div class="quando">
+                <strong>${escapar(c.arquivo)}</strong>
+                <span>Enviado em ${dataCurta(c.enviadoEm.slice(0, 10))} · ${Math.max(1, Math.round(c.tamanho / 1024))} KB</span>
+              </div>
+              <span class="marca-status s-em_aberto">${c.status === 'em_analise' ? 'Em análise' : escapar(c.status)}</span>
+            </div>`).join('')}
+        </div>` : `
+        <p class="rodape-nota" style="margin-top:0">Pagou e ainda não baixou? Anexe o comprovante que a equipe confere.</p>`}
+      <div class="acoes"><button class="botao secundario" id="enviar-comprovante">Enviar comprovante</button></div>
+    `}
+
+    ${(b.historico || []).length ? `
+      <div class="secao-titulo">O que já aconteceu ${b.unico ? 'com este boleto' : 'com esta parcela'}</div>
+      ${b.historico.map((h) => `
+        <div class="historico-item">
+          <div class="quando">${dataCurta(h.quando.slice(0, 10))}</div>
+          <div class="oque">
+            <strong>${escapar(h.oQue)}</strong>
+            ${h.detalhe ? `<span>${escapar(h.detalhe)}</span>` : ''}
+          </div>
+        </div>`).join('')}` : ''}
+
+    ${b.contestacao ? `
+      <div class="faixa ouro" style="margin-top:16px">
+        <div><b>Você contestou esta cobrança</b> em ${dataCurta(b.contestacao.criadoEm.slice(0, 10))}${b.contestacao.motivo ? `: ${escapar(b.contestacao.motivo.toLowerCase())}` : ''}.
+        Protocolo ${escapar(b.contestacao.protocolo)}. A equipe está analisando; até lá a cobrança continua valendo.</div>
+      </div>
+      <div class="acoes"><button class="botao fantasma" id="ver-contestacao">Ver minha contestação</button></div>`
+      : semBoleto || b.status === 'pago' ? '' : `
+      <div class="acoes"><button class="botao fantasma" id="contestar">Não reconheço esta cobrança</button></div>`}
+
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>`;
+
+  abrirFolha(corpo, (el) => {
+    el.querySelector('#recibo')?.addEventListener('click', () => abrirRecibo(id));
+    el.querySelector('#segunda-via')?.addEventListener('click', () => formularioSegundaVia(id, b));
+    // Só aparece quando a 2ª via ainda não existe do outro lado: a conversa é a
+    // saída, e já vai com a parcela escrita para ninguém ter de explicar qual é.
+    el.querySelector('#falar-equipe')?.addEventListener('click', () =>
+      abrirWhatsapp(`Olá! Preciso da 2ª via da ${nomeCobranca(b)}, que venceu em ${dataCurta(b.vencimento)}.`));
+    el.querySelector('#contestar')?.addEventListener('click', () => formularioContestacao(id, b));
+    el.querySelector('#ver-contestacao')?.addEventListener('click', telaMeusPedidos);
+    el.querySelector('#enviar-comprovante')?.addEventListener('click', () => formularioComprovante(id, b));
+    el.querySelector('#copiar')?.addEventListener('click', () => copiar(b.linhaDigitavel));
+    el.querySelector('#pdf')?.addEventListener('click', () => abrirPdf(id, b));
+    el.querySelector('#compartilhar')?.addEventListener('click', () => compartilharBoleto(id, b));
+    el.querySelector('#ir-antecipar')?.addEventListener('click', simulacaoAntecipacao);
+    el.querySelector('#ver-unico')?.addEventListener('click', () => abrirBoleto(b.unicoAtivo.id));
+    el.querySelector('#so-esta')?.addEventListener('click', () => abrirBoleto(id, { individual: true }));
+  });
+}
+
+// O PDF sai de /financeiro/:id/pdf, que exige o token — por isso vem por fetch e
+// não por link direto. O blob é aberto numa aba nova.
+async function baixarPdf(id) {
+  const resposta = await fetch(`${API_BASE}/financeiro/${id}/pdf`, {
+    headers: { authorization: `Bearer ${estado.token}` },
+  });
+  if (!resposta.ok) throw new Error('falha');
+  return resposta.blob();
+}
+
+// Prévia do boleto na própria tela. É o que a versão publicada mostra no lugar
+// do PDF: o visualizador de páginas publicadas não deixa a página iniciar um
+// download. No ambiente local, o botão baixa o PDF de verdade.
+function previaBoleto(d) {
+  abrirFolha(`
+    <div class="boleto-papel">
+      <div class="boleto-marca">INDAIÁ EVENTOS · FORMATURAS</div>
+      <div class="boleto-sub">${d.unico ? 'Boleto único de antecipação' : 'Boleto de parcela do termo de adesão'}</div>
+      <h2>${d.unico ? 'Boleto único' : `Parcela ${d.parcela} de ${d.totalParcelas}`}</h2>
+      <div class="sub">${escapar(d.turma)}</div>
+      <div class="dado"><span>Formando</span><b>${escapar(semMarca(d.formando))}</b></div>
+      <div class="dado"><span>CPF</span><b>${escapar(d.cpf)}</b></div>
+      <div class="dado"><span>Evento</span><b>${escapar(d.evento)}</b></div>
+      <div class="dado"><span>Descrição</span><b>${escapar(d.descricao)}</b></div>
+      <div class="dado"><span>Vencimento</span><b>${dataCurta(d.vencimento)}</b></div>
+      <div class="dado"><span>Valor</span><b>${brl(d.valor)}</b></div>
+      <div class="dado"><span>Situação</span><b>${ROTULO_STATUS[d.status] || d.status}</b></div>
+      ${d.pagoEm ? `<div class="dado"><span>Pago em</span><b>${dataCurta(d.pagoEm)}</b></div>` : ''}
+      ${d.linhaDigitavel ? `
+        <div class="secao-titulo">Linha digitável</div>
+        <div class="linha-digitavel">${escapar(d.linhaDigitavel)}</div>` : ''}
+    </div>
+    <p class="rodape-nota">No app de verdade este botão baixa o PDF do boleto. Aqui, na página
+    publicada, o navegador não deixa a página iniciar downloads — então o boleto aparece na tela.</p>
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `);
+}
+
+async function abrirPdf(id, b) {
+  if (estado.config?.demo) {
+    try { return previaBoleto(await chamar(`/financeiro/${id}/pdf`)); }
+    catch { return avisar('Não foi possível abrir o boleto agora'); }
+  }
+  avisar('Gerando o PDF…');
+  try {
+    const blob = await baixarPdf(id);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.download = `${b.unico ? 'boleto-unico' : `parcela-${b.parcela}`}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch { avisar('Não foi possível abrir o PDF agora'); }
+}
+
+// Compartilhar: no celular abre a folha nativa (WhatsApp, e-mail, arquivos) com o
+// PDF anexado; sem suporte a arquivo, manda só o texto; sem Web Share, cai no
+// WhatsApp Web.
+async function compartilharBoleto(id, b) {
+  const texto = [
+    `${nomeCobranca(b)} · ${escapar(estado.eu?.turma?.rotulo || '')}`.replace(/&[a-z]+;/g, ' '),
+    `Vencimento: ${dataCurta(b.vencimento)}`,
+    `Valor: ${brl(devido(b))}`,
+    b.linhaDigitavel ? `Linha digitável: ${b.linhaDigitavel}` : '',
+  ].filter(Boolean).join('\n');
+
+  try {
+    if (estado.config?.demo) throw new Error('sem arquivo na demonstração');
+    const blob = await baixarPdf(id);
+    const arquivo = new File([blob], `${b.unico ? 'boleto-unico' : `parcela-${b.parcela}`}.pdf`, { type: 'application/pdf' });
+    if (navigator.canShare?.({ files: [arquivo] })) {
+      await navigator.share({ title: nomeCobranca(b), text: texto, files: [arquivo] });
+      return;
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') return; // a pessoa fechou a folha de compartilhamento
+  }
+
+  try {
+    if (navigator.share) { await navigator.share({ title: nomeCobranca(b), text: texto }); return; }
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+  }
+
+  window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`, '_blank', 'noopener');
+}
+
+// ---------- extrato de pagamentos --------------------------------------------
+// O que responde a "estão me cobrando de novo" e serve de comprovação.
+async function telaExtrato() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let e, qtdComprovantes = 0;
+  try {
+    const [extrato, comps] = await Promise.all([chamar('/extrato'), chamar('/comprovantes').catch(() => ({ comprovantes: [] }))]);
+    e = extrato; qtdComprovantes = comps.comprovantes.length;
+  }
+  catch { return abrirFolha('<div class="vazio">Não foi possível montar o extrato agora.</div>'); }
+
+  abrirFolha(`
+    <h2>Extrato de <em>pagamentos</em></h2>
+    <div class="sub">Emitido em ${dataCurta(e.emitidoEm.slice(0, 10))}</div>
+
+    <button class="comprovante" id="ver-comprovantes" style="margin-bottom:14px">
+      <span class="ico">${ICONES.anexo}</span>
+      <span class="quando">
+        <strong>Meus comprovantes</strong>
+        <span>${qtdComprovantes ? `${qtdComprovantes} anexado${qtdComprovantes > 1 ? 's' : ''} por você` : 'Os comprovantes que você anexar ficam aqui'}</span>
+      </span>
+      <span class="seta">›</span>
+    </button>
+
+    <div class="dado"><span>Contrato</span><b>${brl(e.contrato.total)} em ${e.contrato.parcelas}×</b></div>
+    <div class="dado"><span>Assinado em</span><b>${dataCurta(e.contrato.assinadoEm)}</b></div>
+    <div class="dado"><span>Parcelas pagas</span><b>${e.totais.parcelasPagas} de ${e.contrato.parcelas}</b></div>
+    <div class="dado"><span>Total pago</span><b class="verde">${brl(e.totais.pago)}</b></div>
+    <div class="dado"><span>Em aberto</span><b>${brl(e.totais.emAberto)}</b></div>
+    <div class="dado"><span>Parcela contratada</span><b>${brl(e.contrato.mensalidade)}</b></div>
+
+    <div class="secao-titulo">Pagamentos</div>
+    ${e.pagamentos.length ? `
+      <div class="lista">
+        ${e.pagamentos.map((pg) => `
+          <div class="item inerte">
+            <div class="quando">
+              <strong>Parcela ${pg.parcela}</strong>
+              <span>Vencia em ${dataCurta(pg.vencimento)} · pago em ${dataCurta(pg.pagoEm)} · ${escapar(pg.forma)}</span>
+            </div>
+            <div class="quanto"><b>${brl(pg.valorPago)}</b></div>
+          </div>`).join('')}
+      </div>` : '<div class="cartao plano"><div class="vazio">Nenhuma parcela paga ainda.</div></div>'}
+
+    <div class="acoes dupla">
+      <button class="botao secundario" id="extrato-pdf">Abrir em PDF</button>
+      ${e.totais.quitado
+        ? '<button class="botao" id="pedir-quitacao">Pedir declaração de quitação</button>'
+        : '<button class="botao secundario" data-fechar-folha>Fechar</button>'}
+    </div>
+    ${e.totais.quitado ? '' : `
+      <p class="rodape-nota">A declaração de quitação fica disponível quando a última parcela for paga.</p>`}
+  `, (el) => {
+    el.querySelector('#extrato-pdf').addEventListener('click', abrirExtratoPdf);
+    el.querySelector('#ver-comprovantes').addEventListener('click', telaComprovantes);
+    el.querySelector('#pedir-quitacao')?.addEventListener('click', async (ev) => {
+      ev.target.disabled = true; ev.target.textContent = 'Enviando…';
+      try {
+        const s = await chamar('/solicitacoes', {
+          method: 'POST',
+          body: JSON.stringify({ tipo: 'quitacao', mensagem: 'Pedido de declaração de quitação do contrato.' }),
+        });
+        fecharFolha();
+        avisar(`Pedido enviado — protocolo ${s.protocolo}`);
+      } catch { avisar('Não foi possível pedir agora'); }
+    });
+  });
+}
+
+async function abrirExtratoPdf() {
+  if (estado.config?.demo) return avisar('No app de verdade, este botão baixa o extrato em PDF');
+  avisar('Gerando o PDF…');
+  try {
+    const resposta = await fetch(`${API_BASE}/extrato/pdf`, { headers: { authorization: `Bearer ${estado.token}` } });
+    if (!resposta.ok) throw new Error('falha');
+    const url = URL.createObjectURL(await resposta.blob());
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.download = 'extrato.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch { avisar('Não foi possível abrir o PDF agora'); }
+}
+
+// ---------- meus comprovantes ------------------------------------------------
+// Tudo o que o formando anexou, num lugar só — é o que responde ao "mandei o
+// comprovante e ninguém viu". Daqui também dá para mandar um novo.
+// "Conferido" e "Não conferido" saíram em 25/09: o comprovante não passa por
+// aprovação de ninguém — fica guardado, e o que resolve a parcela é a baixa.
+// Enquanto ela não sai, o que o formando precisa saber é que está em análise.
+const STATUS_COMPROVANTE = { em_analise: 'Em análise' };
+
+async function telaComprovantes() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let r;
+  try { r = await chamar('/comprovantes'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir seus comprovantes agora.</div>'); }
+
+  // só faz sentido mandar comprovante do que tem boleto e ainda não baixou
+  const cobrancas = (estado.financeiro?.boletos || [])
+    .filter((b) => b.status === 'em_aberto' || b.status === 'em_atraso')
+    .sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+
+  abrirFolha(`
+    <h2>Meus <em>comprovantes</em></h2>
+    <div class="sub">Tudo o que você anexou por aqui. O comprovante fica em análise até a equipe conferir e dar a baixa.</div>
+
+    ${r.comprovantes.length ? `
+      <div class="lista-comprovantes">
+        ${r.comprovantes.map((c) => `
+          <button class="comprovante" data-ver="${escapar(c.id)}" ${c.temArquivo ? '' : 'disabled'}>
+            <span class="ico">${ICONES.anexo}</span>
+            <span class="quando">
+              <strong>${escapar(c.arquivo)}</strong>
+              <span>${escapar(c.cobranca)} · enviado em ${dataCurta(c.enviadoEm.slice(0, 10))} · ${Math.max(1, Math.round(c.tamanho / 1024))} KB</span>
+              ${c.protocolo ? `<br><span class="protocolo">${escapar(c.protocolo)}</span>` : ''}
+            </span>
+            <span class="marca-status s-em_aberto">${STATUS_COMPROVANTE[c.status] || 'Em análise'}</span>
+          </button>`).join('')}
+      </div>` : '<div class="cartao plano"><div class="vazio">Você ainda não enviou nenhum comprovante.</div></div>'}
+
+    ${cobrancas.length ? `
+      <div class="secao-titulo">Enviar um novo</div>
+      <div class="campo">
+        <label for="qual-cobranca">De qual cobrança</label>
+        <select id="qual-cobranca">
+          ${cobrancas.map((b) => `<option value="${escapar(b.id)}">${escapar(nomeCobranca(b))} · ${brl(devido(b))} · vence ${dataCurta(b.vencimento)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="acoes"><button class="botao" id="novo-comprovante">Anexar comprovante</button></div>` : ''}
+
+    <div class="acoes dupla">
+      <button class="botao secundario" id="voltar-extrato">Voltar ao extrato</button>
+      <button class="botao fantasma" data-fechar-folha>Fechar</button>
+    </div>
+  `, (el) => {
+    el.querySelector('#voltar-extrato').addEventListener('click', telaExtrato);
+    el.querySelectorAll('[data-ver]').forEach((b) => b.addEventListener('click', () => verComprovante(b.dataset.ver)));
+    el.querySelector('#novo-comprovante')?.addEventListener('click', async () => {
+      const id = el.querySelector('#qual-cobranca').value;
+      try { formularioComprovante(id, await chamar(`/financeiro/${id}`), null, 'comprovantes'); }
+      catch { avisar('Não foi possível abrir esta cobrança'); }
+    });
+  });
+}
+
+// Imagem abre na própria folha; PDF abre numa aba nova.
+async function verComprovante(id) {
+  let c;
+  try { c = await chamar(`/comprovantes/${id}`); }
+  catch { return avisar('Não foi possível abrir o comprovante'); }
+  if (!c.conteudo) return avisar('O arquivo deste comprovante não está disponível');
+
+  if (c.tipo.startsWith('image/')) {
+    return abrirFolha(`
+      <h2>${escapar(c.arquivo)}</h2>
+      <img class="previa-comprovante" style="max-height:66vh" src="${escapar(c.conteudo)}" alt="Comprovante enviado" />
+      <div class="acoes dupla">
+        <button class="botao secundario" id="voltar-comprovantes">Voltar aos comprovantes</button>
+        <button class="botao fantasma" data-fechar-folha>Fechar</button>
+      </div>
+    `, (el) => el.querySelector('#voltar-comprovantes').addEventListener('click', telaComprovantes));
+  }
+
+  // data URL → blob, para o navegador abrir o PDF (ele não abre data: numa aba)
+  const [cabeca, base64] = c.conteudo.split(',');
+  const bytes = Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: cabeca.match(/data:([^;]+)/)?.[1] || c.tipo }));
+  const a = document.createElement('a');
+  a.href = url; a.target = '_blank'; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// ---------- meus pedidos -----------------------------------------------------
+// Todo pedido tem protocolo, data e prazo. É o que responde ao "abri e ninguém
+// me deu retorno".
+const STATUS_PEDIDO = { aberta: 'Solicitação em aberto com a equipe', atendida: 'Resolvido', recusada: 'Não aprovado' };
+
+async function telaMeusPedidos() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let r;
+  try { r = await chamar('/solicitacoes'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir seus pedidos agora.</div>'); }
+
+  abrirFolha(`
+    <h2>Meus <em>pedidos</em></h2>
+    <div class="sub">Tudo o que você pediu por aqui, com o número de protocolo de cada pedido.</div>
+
+    ${r.solicitacoes.length ? `
+      <div class="lista">
+        ${r.solicitacoes.map((s) => `
+          <div class="item inerte">
+            <div class="quando">
+              <strong>${escapar(s.rotulo || 'Pedido')}</strong>
+              <span>${escapar(s.payload?.mensagem || '')}</span>
+              <br><span class="protocolo">${escapar(s.protocolo || '')}</span>
+              <span class="marca-status s-${s.status === 'aberta' ? 'em_aberto' : 'pago'}">${STATUS_PEDIDO[s.status] || escapar(s.status)}</span>
+            </div>
+            <div class="quanto">
+              <b>${dataCurta(s.criadoEm.slice(0, 10))}</b>
+            </div>
+          </div>`).join('')}
+      </div>` : '<div class="cartao plano"><div class="vazio">Você ainda não fez nenhum pedido.</div></div>'}
+
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `);
+}
+
+// ---------- 2ª via de parcela vencida ----------------------------------------
+// Boleto vencido o banco recusa. Decisão da equipe (22/09/2026): a 2ª via vence
+// em 5 dias — sem escolha de data. O valor vem do servidor
+// (/segunda-via/simular), com a mesma conta da emissão: o que aparece aqui é o
+// valor do boleto.
+function formularioSegundaVia(id, boleto, erro) {
+  const venc = new Date(`${hoje()}T12:00:00`);
+  venc.setDate(venc.getDate() + DIAS_SEGUNDA_VIA);
+  const novoVencimento = venc.toISOString().slice(0, 10);
+  const atraso = Math.abs(diasAte(boleto.vencimento));
+
+  abrirFolha(`
+    <h2>2ª via da <em>${escapar(nomeCobranca(boleto).toLowerCase())}</em></h2>
+    <div class="sub">Venceu em ${dataCurta(boleto.vencimento)} · ${atraso} dia${atraso === 1 ? '' : 's'} de atraso</div>
+
+    <div class="dado"><span>Com pontualidade, se tivesse pago em dia</span><b>${brl(boleto.valor)}</b></div>
+    <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
+    <div class="dado"><span>Correção pelo IPCA <small id="p-meses"></small></span><b id="p-ipca">…</b></div>
+    <div class="dado"><span>Juros de mora <small id="p-dias"></small></span><b id="p-juros">…</b></div>
+    <div class="dado"><span>Novo vencimento</span><b>${dataCurta(novoVencimento)} <small>(em ${DIAS_SEGUNDA_VIA} dias)</small></b></div>
+    <div class="dado"><span>Valor da 2ª via</span><b${boleto.taxaBoleto ? '' : ' class="destaque-valor"'} id="p-total">calculando…</b></div>
+    ${boleto.taxaBoleto ? `<div class="dado"><span>Taxa administrativa de gestão de conta</span><b>+ ${brl(boleto.taxaBoleto)}</b></div>
+    <div class="dado"><span>Total do boleto</span><b class="destaque-valor" id="p-total-boleto">calculando…</b></div>` : ''}
+
+    <div class="faixa info" style="margin-top:14px">
+      <div>Depois do vencimento a parcela passa a valer o pleno, corrigido pelo IPCA e com juros de
+      mora de 1% ao mês até o novo vencimento ${clausula("4.3")}.</div>
+    </div>
+    ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+
+    <div class="acoes dupla">
+      <button class="botao" id="gerar-2via" disabled>Gerar 2ª via</button>
+      <button class="botao secundario" id="voltar-boleto">Voltar</button>
+    </div>
+    <p class="rodape-nota">A correção usa os meses de IPCA já publicados pelo IBGE. Se você já pagou
+    esta parcela, envie o comprovante em vez de gerar a 2ª via.</p>
+  `, (el) => {
+    const gerar = el.querySelector('#gerar-2via');
+    chamar(`/financeiro/${id}/segunda-via/simular`, { method: 'POST', body: JSON.stringify({ novoVencimento }) })
+      .then((e) => {
+        if (!el.querySelector('#p-total')) return;   // a folha já mudou
+        el.querySelector('#p-ipca').textContent = `+ ${brl(e.correcaoIpca)}`;
+        el.querySelector('#p-meses').textContent = e.ipcaMeses ? `(${e.ipcaMeses} ${e.ipcaMeses === 1 ? 'mês' : 'meses'} publicados pelo IBGE)` : '(nenhum mês fechado desde o vencimento)';
+        el.querySelector('#p-juros').textContent = `+ ${brl(e.juros)}`;
+        el.querySelector('#p-dias').textContent = `(1% ao mês, ${e.diasAtraso} dias)`;
+        el.querySelector('#p-total').textContent = brl(e.total);
+        const totalBoleto = el.querySelector('#p-total-boleto');
+        if (totalBoleto) totalBoleto.textContent = brl(arredondar(e.total + boleto.taxaBoleto));
+        gerar.disabled = false;
+      })
+      .catch(() => { const t = el.querySelector('#p-total'); if (t) t.textContent = 'não foi possível calcular'; });
+
+    el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id, { individual: true }));
+    gerar.addEventListener('click', async () => {
+      gerar.disabled = true; gerar.textContent = 'Gerando…';
+      try {
+        const r = await chamar(`/financeiro/${id}/segunda-via`, { method: 'POST', body: JSON.stringify({ novoVencimento }) });
+        estado.financeiro = await chamar('/financeiro');
+        abaFinanceiro();
+        avisar('2ª via gerada');
+        // No protótipo a parcela mantém o id; no CRM a 2ª via é uma cobrança
+        // NOVA e a antiga sai da lista — abrir o id velho mostraria "não
+        // encontrada" logo depois de dar certo.
+        abrirBoleto(r?.novoBillId || id, { individual: true });
+      } catch (err) {
+        const mensagens = {
+          nao_esta_vencida: 'Esta parcela não está vencida.',
+          data_invalida: 'Não foi possível usar esta data.',
+          data_longe: `A 2ª via vence em até ${DIAS_SEGUNDA_VIA} dias.`,
+        };
+        // `detalhe` é a frase que o CRM já manda pronta e explicando; os códigos
+        // acima são do protótipo, que devolve erro em uma palavra.
+        formularioSegundaVia(id, boleto, mensagens[err.message] || err.detalhe || 'Não foi possível gerar agora.');
+      }
+    });
+  });
+}
+
+// ---------- contestar uma cobrança -------------------------------------------
+function formularioContestacao(id, boleto) {
+  const MOTIVOS = [
+    'Já paguei esta parcela',
+    'O valor está diferente do contratado',
+    'Não reconheço esta cobrança',
+    'Cancelei ou troquei de turma',
+    'Outro motivo',
+  ];
+  abrirFolha(`
+    <h2>Contestar <em>cobrança</em></h2>
+    <div class="sub">${escapar(nomeCobranca(boleto))} · ${brl(devido(boleto))} · vence em ${dataCurta(boleto.vencimento)}</div>
+
+    <div class="campo">
+      <label for="motivo">Motivo</label>
+      <select id="motivo">${MOTIVOS.map((m) => `<option>${escapar(m)}</option>`).join('')}</select>
+    </div>
+    <div class="campo">
+      <label for="detalhe">Conte o que aconteceu</label>
+      <textarea id="detalhe" placeholder="Quanto mais detalhe, mais rápido a equipe resolve"></textarea>
+    </div>
+    <div class="acoes dupla">
+      <button class="botao" id="enviar-contestacao">Abrir contestação</button>
+      <button class="botao secundario" id="voltar-boleto">Voltar</button>
+    </div>
+    <p class="rodape-nota">A cobrança fica registrada como contestada enquanto a equipe analisa.
+    Se você tem comprovante de pagamento, anexe também — resolve mais rápido.</p>
+  `, (el) => {
+    el.querySelector('#voltar-boleto').addEventListener('click', () => abrirBoleto(id));
+    el.querySelector('#enviar-contestacao').addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Enviando…';
+      try {
+        const r = await chamar('/solicitacoes', {
+          method: 'POST',
+          body: JSON.stringify({
+            tipo: 'contestacao',
+            billId: boleto.id,
+            motivo: el.querySelector('#motivo').value,
+            mensagem: `${nomeCobranca(boleto)} · ${el.querySelector('#motivo').value}. ${el.querySelector('#detalhe').value}`.trim(),
+          }),
+        });
+        estado.financeiro = await chamar('/financeiro').catch(() => estado.financeiro);
+        if (estado.aba === 'financeiro') abaFinanceiro();
+        folhaPedidoEnviado({
+          titulo: 'Contestação <em>registrada</em>',
+          sub: `${escapar(nomeCobranca(boleto))} · ${brl(aPagar(boleto))}`,
+          protocolo: r.protocolo,
+          nota: 'A cobrança fica marcada como contestada até a equipe analisar.',
+        });
+      } catch (err) {
+        if (err.message === 'contestacao_ja_aberta') { avisar('Você já tem uma contestação aberta para esta cobrança'); return abrirBoleto(id); }
+        e.target.disabled = false; e.target.textContent = 'Abrir contestação';
+        avisar('Não foi possível abrir a contestação agora');
+      }
+    });
+  });
+}
+
+// ---------- negociação de débitos --------------------------------------------
+// Decisão da equipe (22/09/2026): com mais de duas parcelas vencidas, a
+// negociação é feita pela equipe. Por enquanto o formando abre o pedido e diz
+// como prefere ser contatado; a autonomia para negociar sozinho vem depois.
+// Até duas vencidas, ele resolve pela 2ª via ou pelo boleto único.
+
+async function formularioNegociacao() {
+  const vencidas = estado.financeiro.boletos
+    .filter((b) => !b.unico && b.status === 'em_atraso')
+    .sort((a, b) => a.parcela - b.parcela);
+  if (!vencidas.length) return avisar('Você não tem parcelas vencidas');
+
+  // pedido já aberto não vira pedido repetido
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  const pedidos = await chamar('/solicitacoes').catch(() => ({ solicitacoes: [] }));
+  const aberto = pedidos.solicitacoes.find((s) => s.tipo === 'renegociacao' && s.status === 'aberta');
+  if (aberto) {
+    return abrirFolha(`
+      <h2>Negociação <em>em andamento</em></h2>
+      <div class="sub">Seu pedido já está com a equipe.</div>
+      <div class="dado"><span>Protocolo</span><b>${escapar(aberto.protocolo)}</b></div>
+      <div class="dado"><span>Pedido em</span><b>${dataCurta(aberto.criadoEm.slice(0, 10))}</b></div>
+      <div class="acoes dupla">
+        <button class="botao secundario" id="ver-pedidos">Ver meus pedidos</button>
+        <button class="botao fantasma" data-fechar-folha>Fechar</button>
+      </div>
+    `, (el) => el.querySelector('#ver-pedidos').addEventListener('click', telaMeusPedidos));
+  }
+
+  const total = Math.round(vencidas.reduce((a, b) => a + devido(b), 0) * 100) / 100;
+  const taxa = estado.config?.contrato?.taxaReprogramacao ?? 75;
+
+  abrirFolha(`
+    <h2>Negociar <em>com a equipe</em></h2>
+    <div class="sub">Com ${vencidas.length} parcelas vencidas, quem combina a forma de pagamento é a equipe.
+    Deixe o pedido e alguém fala com você.</div>
+
+    <div class="secao-titulo">Parcelas vencidas</div>
+    ${vencidas.map((b) => `
+      <div class="dado">
+        <span>${escapar(nomeCobranca(b))} <small>(venceu em ${dataCurta(b.vencimento)})</small></span>
+        <b>${brl(devido(b))}</b>
+      </div>`).join('')}
+    <div class="dado"><span>Total hoje, com os encargos de atraso</span><b class="destaque-valor">${brl(total)}</b></div>
+
+    <div class="secao-titulo">Como falar com a equipe</div>
+    <div class="campo">
+      <label for="obs-negociacao">Quer contar algo? <small>(opcional)</small></label>
+      <textarea id="obs-negociacao" placeholder="Quero negociar meus débitos, quais as opções de pagamento?"></textarea>
+    </div>
+    <p class="rodape-nota">O pedido abre uma conversa no seu WhatsApp, já endereçada ao Financeiro.</p>
+
+    <p class="rodape-nota">Se a forma de pagamento for reprogramada, o termo prevê uma taxa fixa de
+    ${brl(taxa)} ${clausula("17.3")}.</p>
+    <div class="acoes dupla">
+      <button class="botao" id="enviar-negociacao">Pedir contato da equipe</button>
+      <button class="botao fantasma" data-fechar-folha>Cancelar</button>
+    </div>
+  `, (el) => {
+    el.querySelector('#enviar-negociacao').addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Enviando…';
+      const obs = el.querySelector('#obs-negociacao').value.trim();
+      try {
+        const s = await chamar('/solicitacoes', {
+          method: 'POST',
+          body: JSON.stringify({
+            tipo: 'renegociacao',
+            quantidade: vencidas.length,
+            mensagem: `${vencidas.length} parcelas vencidas (${vencidas.map((b) => b.parcela).join(', ')}) · ${brl(total)} hoje.${obs ? ` ${obs}` : ''}`,
+          }),
+        });
+        folhaPedidoEnviado({
+          titulo: 'Pedido <em>registrado</em>',
+          sub: `${vencidas.length} parcelas vencidas · ${brl(total)} hoje`,
+          protocolo: s.protocolo,
+          nota: 'Enquanto isso, a 2ª via de cada parcela continua disponível, se você quiser pagar alguma antes.',
+        });
+      } catch {
+        e.target.disabled = false; e.target.textContent = 'Pedir contato da equipe';
+        avisar('Não foi possível enviar agora');
+      }
+    });
+  });
+}
+
+// ---------- comprovante de pagamento -----------------------------------------
+// Anexar não dá baixa na parcela: ela continua como está até a equipe conferir.
+const TIPOS_COMPROVANTE = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const LIMITE_COMPROVANTE = 8 * 1024 * 1024;
+
+// `origem` diz para onde voltar: o detalhe da parcela (padrão) ou a área de
+// comprovantes.
+function formularioComprovante(id, boleto, erro, origem) {
+  const voltar = () => (origem === 'comprovantes' ? telaComprovantes() : abrirBoleto(id));
+  abrirFolha(`
+    <h2>Enviar <em>comprovante</em></h2>
+    <div class="sub">${escapar(nomeCobranca(boleto))} · ${brl(devido(boleto))} · vence em ${dataCurta(boleto.vencimento)}</div>
+
+    <div class="campo">
+      <label for="arquivo">Comprovante</label>
+      <input id="arquivo" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" />
+      <div class="dica">Foto ou PDF do comprovante, até 8 MB.</div>
+    </div>
+    <div id="previa"></div>
+    <div class="campo">
+      <label for="obs">Observação</label>
+      <textarea id="obs" placeholder="Opcional — por exemplo: paguei no caixa eletrônico no dia 15"></textarea>
+    </div>
+    ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+    <div class="acoes dupla">
+      <button class="botao" id="enviar" disabled>Enviar</button>
+      <button class="botao secundario" id="voltar-boleto">Voltar</button>
+    </div>
+    <p class="rodape-nota">A parcela continua em aberto até a equipe conferir o pagamento. Assim que
+    a baixa sair, ela muda de situação sozinha.</p>
+  `, (el) => {
+    const campo = el.querySelector('#arquivo');
+    const botao = el.querySelector('#enviar');
+    const previa = el.querySelector('#previa');
+    let escolhido = null;
+
+    campo.addEventListener('change', () => {
+      const f = campo.files?.[0];
+      previa.innerHTML = '';
+      escolhido = null;
+      botao.disabled = true;
+      if (!f) return;
+      if (!TIPOS_COMPROVANTE.includes(f.type)) return avisar('Aceita foto (JPG, PNG, WebP) ou PDF');
+      if (f.size > LIMITE_COMPROVANTE) return avisar('Arquivo maior que 8 MB');
+
+      escolhido = f;
+      botao.disabled = false;
+      if (f.type.startsWith('image/')) {
+        const url = URL.createObjectURL(f);
+        previa.innerHTML = `<img class="previa-comprovante" src="${url}" alt="Prévia do comprovante" />`;
+        previa.querySelector('img').addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+      } else {
+        previa.innerHTML = `<div class="previa-pdf">${ICONES.anexo}<span>${escapar(f.name)}</span></div>`;
+      }
+    });
+
+    el.querySelector('#voltar-boleto').addEventListener('click', voltar);
+
+    botao.addEventListener('click', async () => {
+      if (!escolhido) return;
+      botao.disabled = true; botao.textContent = 'Enviando…';
+      try {
+        const conteudo = await new Promise((resolve, reject) => {
+          const leitor = new FileReader();
+          leitor.onload = () => resolve(leitor.result);
+          leitor.onerror = () => reject(leitor.error);
+          leitor.readAsDataURL(escolhido);
+        });
+        await chamar(`/financeiro/${id}/comprovante`, {
+          method: 'POST',
+          body: JSON.stringify({
+            arquivo: escolhido.name,
+            tipo: escolhido.type,
+            tamanho: escolhido.size,
+            observacao: el.querySelector('#obs').value.trim(),
+            conteudo,
+          }),
+        });
+        avisar('Comprovante enviado. A equipe confere e dá a baixa.');
+        // a lista atrás da folha ganha o selo "Comprovante enviado"
+        estado.financeiro = await chamar('/financeiro').catch(() => estado.financeiro);
+        if (estado.aba === 'financeiro') abaFinanceiro();
+        voltar();
+      } catch (err) {
+        const mensagens = {
+          tipo_nao_aceito: 'Aceita foto (JPG, PNG, WebP) ou PDF.',
+          arquivo_grande: 'Arquivo maior que 8 MB.',
+        };
+        formularioComprovante(id, boleto, mensagens[err.message] || 'Não foi possível enviar agora.', origem);
+      }
+    });
+  });
+}
+
+// ---------- meus dados -------------------------------------------------------
+// O formando confere o contato e pede correção. O valor só muda de verdade
+// depois que a equipe confere — é por aqui que a gente conserta boleto que não
+// chega porque o telefone ou o e-mail estão errados.
+const mascaraTelefone = (v) => {
+  const d = v.replace(/\D/g, '').replace(/^55/, '').slice(0, 11);
+  if (d.length <= 2) return d;
+  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+};
+
+async function telaMeusDados(erro) {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let p;
+  try { p = await chamar('/perfil'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir seus dados agora.</div>'); }
+
+  const pendente = p.pendente;
+  abrirFolha(`
+    <h2>Meus <em>dados</em></h2>
+    <div class="sub">Confira como a gente fala com você. O boleto e os avisos da turma vão para estes contatos.</div>
+
+    <div class="dado"><span>Nome</span><b>${escapar(semMarca(p.nome))}</b></div>
+    <div class="dado"><span>CPF</span><b>${escapar(p.cpf)}</b></div>
+    <div class="dado"><span>Turma</span><b>${escapar(p.turma)}</b></div>
+
+    ${pendente ? `
+      <div class="faixa info" style="margin-top:16px">
+        <div>
+          <b>Pedido de correção em análise.</b>
+          ${pendente.email ? `<br>Novo e-mail: ${escapar(pendente.email)}` : ''}
+          ${pendente.telefone ? `<br>Novo telefone: ${escapar(mascaraTelefone(pendente.telefone))}` : ''}
+          <br>Enviado em ${dataCurta(pendente.pedidoEm.slice(0, 10))} — até a equipe confirmar, valem os contatos atuais.
+        </div>
+      </div>` : ''}
+
+    <div class="secao-titulo">Contato</div>
+    <form id="form-contato" novalidate>
+      <div class="campo">
+        <label for="email">E-mail</label>
+        <input id="email" type="email" inputmode="email" autocomplete="email" value="${escapar(p.email || '')}" />
+      </div>
+      <div class="campo">
+        <label for="telefone">Celular com WhatsApp</label>
+        <input id="telefone" inputmode="tel" autocomplete="tel" value="${escapar(mascaraTelefone(p.telefone || ''))}" />
+        <div class="dica">É para onde vai o código de acesso; o aviso de vencimento vai por e-mail.</div>
+      </div>
+      ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+      <div class="acoes dupla">
+        <button class="botao" type="submit">Pedir correção</button>
+        <button class="botao secundario" type="button" data-fechar-folha>Fechar</button>
+      </div>
+    </form>
+    <div class="secao-titulo">Lembrete de vencimento</div>
+    <p class="rodape-nota" style="margin:0 0 12px">
+      ${p.lembreteDias
+        ? `Hoje você recebe o aviso <b>${p.lembreteDias} dia${p.lembreteDias > 1 ? 's' : ''} antes</b> de cada vencimento, por e-mail.`
+        : 'Quer um aviso antes de cada parcela vencer? Escolha quando, e ele chega por e-mail.'}
+    </p>
+    <div class="filtros" id="lembretes">
+      ${[1, 3, 5, 7].map((d) => `<button data-lembrete="${d}" class="${p.lembreteDias === d ? 'ativo' : ''}">${d} dia${d > 1 ? 's' : ''} antes</button>`).join('')}
+      ${p.lembreteDias ? '<button data-lembrete="0">Não quero</button>' : ''}
+    </div>
+
+    <p class="rodape-nota">A mudança de contato é conferida pela equipe antes de valer — assim
+    ninguém troca o contato de outra pessoa por engano.</p>
+  `, (el) => {
+    el.querySelectorAll('[data-lembrete]').forEach((b) => b.addEventListener('click', async () => {
+      const dias = Number(b.dataset.lembrete);
+      try {
+        await chamar('/perfil/lembrete', { method: 'POST', body: JSON.stringify({ dias: dias || null }) });
+        avisar(dias ? `Combinado: aviso ${dias} dia${dias > 1 ? 's' : ''} antes` : 'Lembrete desligado');
+        telaMeusDados();
+      } catch { avisar('Não foi possível registrar agora'); }
+    }));
+    const tel = el.querySelector('#telefone');
+    tel.addEventListener('input', () => { tel.value = mascaraTelefone(tel.value); });
+
+    el.querySelector('#form-contato').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const botao = el.querySelector('button[type=submit]');
+      botao.disabled = true; botao.textContent = 'Enviando…';
+      try {
+        await chamar('/perfil/contato', {
+          method: 'POST',
+          body: JSON.stringify({
+            email: el.querySelector('#email').value.trim(),
+            telefone: `55${tel.value.replace(/\D/g, '')}`,
+          }),
+        });
+        avisar('Pedido enviado. A equipe confirma e avisa você.');
+        telaMeusDados();
+      } catch (err) {
+        const mensagens = {
+          email_invalido: 'Esse e-mail não parece válido.',
+          telefone_invalido: 'Digite o celular com DDD.',
+          nada_mudou: 'Os dados estão iguais aos que já temos.',
+        };
+        telaMeusDados(mensagens[err.message] || 'Não foi possível enviar agora.');
+      }
+    });
+  });
+}
+
+// ---------- aba: cronograma --------------------------------------------------
+const TIPO_ETAPA = {
+  evento: 'Evento', reuniao: 'Reunião', prazo: 'Prazo', marco: 'Marco', baile: 'O grande dia',
+};
+
+// Cada etapa ganha um símbolo, no mesmo traço fino do símbolo do curso. A busca é
+// pelo nome da etapa; sem correspondência, vale o desenho do tipo (reunião,
+// prazo, evento…).
+const SIMBOLOS_ETAPA = [
+  // assinatura do termo: caneta sobre o papel
+  { re: /assinatura|termo|contrato/i, svg: '<path d="M6 3.5h7l4 4v13H6Z"/><path d="M13 3.8V7.5h3.7"/><path d="m9 16.5 5.4-5.4 1.6 1.6-5.4 5.4-2 .4Z"/>' },
+  // reunião de comissão: pessoas à mesa
+  { re: /reuni[aã]o|comiss[aã]o|alinhamento/i, svg: '<circle cx="9" cy="8.5" r="2.4"/><circle cx="16" cy="9.5" r="2"/><path d="M4.5 17c0-2.5 2-4.2 4.5-4.2s4.5 1.7 4.5 4.2"/><path d="M15 12.9c2.2.1 3.8 1.7 3.8 4.1"/><path d="M3 20.5h18"/>' },
+  // cardápio e degustação: talheres
+  { re: /card[aá]pio|degusta|jantar|buffet/i, svg: '<path d="M7 3.5v7a2 2 0 0 0 4 0v-7M9 10.5v10"/><path d="M16.5 3.5c-1.5 1.6-2 3.2-2 5.2 0 1.6.8 2.6 2 2.8v9"/>' },
+  // decoração: flor
+  { re: /decora|cen[aá]rio|flores/i, svg: '<path d="M12 12.5c-3.2 0-4.8-2.7-4.8-6 1.8.7 2.9 1.8 3.3 2.9.3-1.8 1-3.2 1.5-4 .5.8 1.2 2.2 1.5 4 .4-1.1 1.5-2.2 3.3-2.9 0 3.3-1.6 6-4.8 6Z"/><path d="M12 12.5V21"/>' },
+  // family day: família
+  { re: /family|fam[ií]lia/i, svg: '<circle cx="8" cy="7.5" r="2.2"/><circle cx="16" cy="7.5" r="2.2"/><path d="M4 16.5c0-2.4 1.8-4 4-4s4 1.6 4 4M12 16.5c0-2.4 1.8-4 4-4s4 1.6 4 4"/><path d="M12 19.5c-1.6 0-2.4-1-2.4-2.2M12 19.5c1.6 0 2.4-1 2.4-2.2"/>' },
+  // prazo de convites: envelope
+  { re: /convite|nomes/i, svg: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="m4 7 8 6 8-6"/>' },
+  // traje: gravata-borboleta
+  { re: /traje|vestido|terno/i, svg: '<path d="M10.5 9.5 4 6.5v11l6.5-3Z"/><path d="M13.5 9.5 20 6.5v11l-6.5-3Z"/><rect x="10.3" y="9.3" width="3.4" height="5.4" rx="1"/>' },
+  // ensaio fotográfico: câmera
+  { re: /ensaio|foto|book/i, svg: '<rect x="3" y="7" width="18" height="12.5" rx="2.5"/><path d="M8.5 7 10 4.5h4L15.5 7"/><circle cx="12" cy="13.2" r="3.3"/>' },
+  // parcela: nota
+  { re: /parcela|pagamento|financeiro/i, svg: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/>' },
+  // culto: vela acesa
+  { re: /culto|ecum[eê]nico|missa/i, svg: '<path d="M12 2.8c1.6 1.6 2.4 2.8 2.4 4a2.4 2.4 0 0 1-4.8 0c0-1.2.8-2.4 2.4-4Z"/><path d="M8.5 10.5h7v10h-7Z"/><path d="M12 10.5v10"/>' },
+  // colação de grau: capelo
+  { re: /cola[cç][aã]o|grau|diploma/i, svg: '<path d="M12 3.5 22 8l-10 4.5L2 8l10-4.5Z"/><path d="M6.5 10.2V15c0 1.5 2.5 2.7 5.5 2.7s5.5-1.2 5.5-2.7v-4.8"/><path d="M22 8v5.5"/>' },
+  // baile: taças de brinde
+  { re: /baile|gala|festa|brinde/i, svg: '<path d="M5 3.5h5l-1 6a1.6 1.6 0 0 1-3 0Z"/><path d="M7.5 9.5V20M5.5 20.5h4"/><path d="M14 3.5h5l-1 6a1.6 1.6 0 0 1-3 0Z"/><path d="M16.5 9.5V20M14.5 20.5h4"/>' },
+];
+
+const SIMBOLO_POR_TIPO = {
+  reuniao: '<circle cx="9" cy="8.5" r="2.4"/><circle cx="16" cy="9.5" r="2"/><path d="M4.5 17c0-2.5 2-4.2 4.5-4.2s4.5 1.7 4.5 4.2"/><path d="M15 12.9c2.2.1 3.8 1.7 3.8 4.1"/>',
+  prazo: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.3l3.4 2"/>',
+  evento: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  marco: '<path d="M6 3.5v17"/><path d="M6 4.5h11l-2 3.5 2 3.5H6Z"/>',
+  baile: '<path d="M5 3.5h5l-1 6a1.6 1.6 0 0 1-3 0Z"/><path d="M7.5 9.5V20M5.5 20.5h4"/><path d="M14 3.5h5l-1 6a1.6 1.6 0 0 1-3 0Z"/><path d="M16.5 9.5V20M14.5 20.5h4"/>',
+};
+
+const simboloDaEtapa = (e) =>
+  (SIMBOLOS_ETAPA.find((s) => s.re.test(e.etapa || '')) || {}).svg
+  || SIMBOLO_POR_TIPO[e.tipo]
+  || SIMBOLO_POR_TIPO.marco;
+
+function abaCronograma() {
+  const t = estado.turma;
+  const etapas = [...t.cronograma].sort((a, b) => a.data.localeCompare(b.data));
+  const proxima = etapas.find((e) => e.data >= hoje());
+  const feitas = etapas.filter((e) => e.data < hoje()).length;
+
+  // Agrupa por ano, para a lista longa não virar um paredão.
+  const anos = [...new Set(etapas.map((e) => e.data.slice(0, 4)))];
+
+  const quando = (iso) => {
+    const d = diasAte(iso);
+    if (d < 0) return `há ${Math.abs(d)} dia${Math.abs(d) === 1 ? '' : 's'}`;
+    if (d === 0) return 'hoje';
+    if (d === 1) return 'amanhã';
+    if (d < 60) return `em ${d} dias`;
+    const meses = Math.round(d / 30);
+    return `em ${meses} meses`;
+  };
+
+  moldura(`
+    <div class="cartao">
+      <div class="kicker traco">Da adesão ao baile</div>
+      <h2 class="serif" style="margin:8px 0 4px;font-size:30px">${etapas.length} etapas até a <em>formatura</em></h2>
+      <p style="margin:0;color:var(--texto-suave);font-size:13.5px">
+        ${feitas} já ${feitas === 1 ? 'aconteceu' : 'aconteceram'} · ${etapas.length - feitas} pela frente
+        ${proxima ? ` · a próxima é <b>${escapar(proxima.etapa)}</b>, ${quando(proxima.data)}` : ''}
+      </p>
+      <div class="contagem">
+        <div><b>${diasAte(t.dataEvento)}</b><span>dias para o baile</span></div>
+        <div><b>${feitas}/${etapas.length}</b><span>etapas cumpridas</span></div>
+        <div><b>${anos.length}</b><span>anos de jornada</span></div>
+      </div>
+    </div>
+
+    ${anos.map((ano) => `
+      <div class="crono-ano"><span>${ano}</span><i></i></div>
+      <div class="crono-lista">
+      ${etapas.filter((e) => e.data.startsWith(ano)).map((e) => {
+        const passou = e.data < hoje();
+        const eh = e === proxima;
+        const d = new Date(`${e.data}T12:00:00`);
+        return `
+          <div class="crono-item ${passou ? 'passado' : ''} ${eh ? 'proximo' : ''}">
+            <div class="crono-data">
+              <b>${String(d.getDate()).padStart(2, '0')}</b>
+              <span>${d.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '')}</span>
+              <span class="crono-simbolo" aria-hidden="true">
+                <svg viewBox="0 0 24 24">${simboloDaEtapa(e)}</svg>
+              </span>
+            </div>
+            <div class="crono-corpo">
+              <h3>${escapar(e.etapa)}</h3>
+              <p>${escapar(e.local || '')}${e.observacao ? `${e.local ? ' — ' : ''}${escapar(e.observacao)}` : ''}</p>
+              <div class="crono-tags">
+                <span class="crono-tag t-${e.tipo || 'marco'}">${TIPO_ETAPA[e.tipo] || 'Etapa'}</span>
+                <span class="crono-quando">${passou ? 'já aconteceu' : quando(e.data)}${e.hora ? ` · ${escapar(e.hora)}` : ''}</span>
+                ${eh ? '<span class="crono-tag t-baile">Próxima</span>' : ''}
+              </div>
+              ${passou ? '' : acoesDaEtapa(e)}
+            </div>
+          </div>`;
+      }).join('')}
+      </div>
+    `).join('')}
+
+    <p class="rodape-nota">As datas são confirmadas pela equipe e pela comissão da turma. Quando algo mudar, o aviso aparece aqui e em Minha turma.</p>
+    ${notaRodape()}
+  `, `${feitas} de ${etapas.length} etapas cumpridas`);
+
+  ligarEtapas(etapas);
+}
+
+// Cada etapa que ainda vai acontecer leva o que a pessoa precisa fazer com ela:
+// salvar no calendário, achar o endereço e dizer se vai.
+function acoesDaEtapa(e) {
+  const mapa = e.endereco ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(e.endereco)}` : null;
+  return `
+    <div class="crono-acoes">
+      <button data-ics="${escapar(e.chave || e.data)}">${ICONES.calendario}<span>Salvar no calendário</span></button>
+      ${mapa ? `<a href="${mapa}" target="_blank" rel="noopener">${ICONES.mapa}<span>Como chegar</span></a>` : ''}
+      ${e.confirmar ? `
+        <button data-presenca="sim" data-etapa="${escapar(e.chave)}" class="${e.presenca === 'sim' ? 'ativo' : ''}">${ICONES.check}<span>${e.presenca === 'sim' ? 'Você confirmou' : 'Vou'}</span></button>
+        <button data-presenca="nao" data-etapa="${escapar(e.chave)}" class="${e.presenca === 'nao' ? 'ativo' : ''}"><span>${e.presenca === 'nao' ? 'Você não vai' : 'Não vou'}</span></button>` : ''}
+    </div>`;
+}
+
+// Arquivo .ics: o calendário do celular e o Google Agenda abrem direto.
+function baixarIcs(etapa, turma) {
+  const limpo = (s) => String(s || '').replace(/[\r\n]+/g, ' ').replace(/([,;\\])/g, '\\$1');
+  const semTraco = etapa.data.replace(/-/g, '');
+  const diaSeguinte = new Date(`${etapa.data}T12:00:00`);
+  diaSeguinte.setDate(diaSeguinte.getDate() + 1);
+  const fim = diaSeguinte.toISOString().slice(0, 10).replace(/-/g, '');
+  const carimbo = `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`;
+
+  const quandoInicio = etapa.hora
+    ? `DTSTART:${semTraco}T${etapa.hora.replace(':', '')}00`
+    : `DTSTART;VALUE=DATE:${semTraco}`;
+  const quandoFim = etapa.hora
+    ? `DTEND:${semTraco}T${String(Number(etapa.hora.slice(0, 2)) + 3).padStart(2, '0')}${etapa.hora.slice(3, 5)}00`
+    : `DTEND;VALUE=DATE:${fim}`;
+
+  const linhas = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Indaia Eventos//Area do Formando//PT-BR',
+    'BEGIN:VEVENT',
+    `UID:${semTraco}-${Math.random().toString(36).slice(2)}@areadoformando`,
+    `DTSTAMP:${carimbo}`, quandoInicio, quandoFim,
+    `SUMMARY:${limpo(etapa.etapa)} · ${limpo(turma)}`,
+    etapa.endereco ? `LOCATION:${limpo(etapa.endereco)}` : (etapa.local ? `LOCATION:${limpo(etapa.local)}` : ''),
+    `DESCRIPTION:${limpo(etapa.observacao || 'Etapa da sua formatura')}`,
+    'END:VEVENT', 'END:VCALENDAR',
+  ].filter(Boolean);
+
+  const blob = new Blob([linhas.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${etapa.etapa.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').toLowerCase()}.ics`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 20000);
+  avisar('Evento salvo — abra o arquivo para adicionar ao calendário');
+}
+
+function ligarEtapas(etapas) {
+  const achar = (chave) => etapas.find((e) => (e.chave || e.data) === chave);
+  app.querySelectorAll('[data-ics]').forEach((b) => b.addEventListener('click', () => {
+    const e = achar(b.dataset.ics);
+    if (e) baixarIcs(e, estado.turma?.rotulo || '');
+  }));
+  app.querySelectorAll('[data-presenca]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try {
+      await chamar('/turma/presenca', {
+        method: 'POST',
+        body: JSON.stringify({ chave: b.dataset.etapa, resposta: b.dataset.presenca }),
+      });
+      estado.turma = await chamar('/turma');
+      abaCronograma();
+      avisar(b.dataset.presenca === 'sim' ? 'Presença confirmada' : 'Anotado: você não vai');
+    } catch { b.disabled = false; avisar('Não foi possível registrar agora'); }
+  }));
+}
+
+// ---------- aba: contrato e convites ----------------------------------------
+function abaContrato() {
+  const c = estado.contrato;
+  moldura(`
+    <div class="secao-titulo">Meus documentos</div>
+    <div class="lista">
+      <button class="item" data-doc="termo">
+        <div class="quando">
+          <strong>Termo de adesão</strong>
+          <span>Assinado em ${dataCurta(c.termo.assinadoEm)} · ${c.termo.origem === 'docuseal' ? 'assinatura digital' : 'documento anexado'}</span>
+        </div>
+        <div class="seta">›</div>
+      </button>
+      <button class="item" data-doc="coletivo">
+        <div class="quando">
+          <strong>Contrato coletivo da turma</strong>
+          <span>${escapar(c.contratoColetivo.turma)}</span>
+        </div>
+        <div class="seta">›</div>
+      </button>
+    </div>
+
+    <div class="secao-titulo">O que você contratou</div>
+    <div class="cartao">
+      <div class="dado"><span>Valor total</span><b>${brl(c.contratado.total)}</b></div>
+      <div class="dado"><span>Parcelas</span><b>${c.contratado.parcelas}× de ${brl(c.contratado.mensalidade)}</b></div>
+      <div class="dado"><span>Primeira parcela</span><b>${dataCurta(c.contratado.primeiraParcela)}</b></div>
+      <div class="dado"><span>Desconto por pagar até o vencimento ${clausula("4.1")}</span><b class="verde">20%</b></div>
+      ${c.taxaBoleto ? `<div class="dado"><span>Taxa administrativa de gestão de conta <small>(em cada boleto)</small></span><b>${brl(c.taxaBoleto)}</b></div>` : ''}
+    </div>
+
+    <div class="secao-titulo">Seus convites</div>
+    <div class="cartao">
+      ${c.convites.map((cv) => {
+        const pct = cv.quantidade ? Math.min(100, (cv.nomeados || 0) / cv.quantidade * 100) : 0;
+        return `
+          <div class="convite-linha">
+            <div class="convite-topo">
+              <span>${escapar(cv.tipo)}${cv.quantidade > cv.incluso ? ` <small>(${cv.incluso} no pacote + ${cv.quantidade - cv.incluso} extra)</small>` : ''}</span>
+              <b>${cv.quantidade}${cv.valorUnitario ? ` · ${brl(cv.valorUnitario)}` : ' · incluso'}</b>
+            </div>
+            <div class="convite-barra"><i style="width:${pct.toFixed(0)}%"></i></div>
+            <small>${cv.nomeados || 0} de ${cv.quantidade} com nome na lista${(cv.nomeados || 0) < cv.quantidade ? ' — faltam nomear' : ' ✓'}</small>
+          </div>`;
+      }).join('')}
+      <div class="acoes"><button class="botao secundario" id="pedir">Pedir convites extras</button></div>
+    </div>
+
+    ${(() => {
+      // Aqui só cabem os pedidos que mexem no contrato; o resto mora em Meus pedidos.
+      const doContrato = (c.solicitacoes || []).filter((s) => ['convites_extras', 'antecipacao', 'quitacao'].includes(s.tipo));
+      if (!doContrato.length) return '';
+      return `
+        <div class="secao-titulo">Seus pedidos de convite</div>
+        <div class="lista">
+          ${doContrato.map((s) => `
+            <div class="item inerte">
+              <div class="quando">
+                <strong>${escapar(s.rotulo || 'Pedido para a equipe')}</strong>
+                <span>${escapar(s.payload.mensagem || '')}</span>
+                <br><span class="protocolo">${escapar(s.protocolo || '')}</span>
+                <span class="marca-status s-em_aberto">${STATUS_PEDIDO[s.status] || escapar(s.status)}</span>
+              </div>
+            </div>`).join('')}
+        </div>
+        <p class="rodape-nota">Pedidos de convite não viram cobrança sozinhos: a equipe confere e faz o aditivo com você.</p>`;
+    })()}
+
+    ${notaRodape()}
+  `);
+
+  app.querySelectorAll('[data-doc]').forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.doc !== 'termo') return avisar('No ambiente real, abre o PDF por link assinado de curta duração');
+    if (estado.config?.demo) return avisar('No app de verdade, abre o termo assinado em PDF');
+    baixarArquivo('/contrato/termo/pdf', 'termo-de-adesao.pdf');
+  }));
+  app.querySelector('#pedir')?.addEventListener('click', formularioConvites);
+}
+
+function formularioConvites() {
+  const tipos = estado.contrato.convites.map((c) => c.tipo);
+  abrirFolha(`
+    <h2>Convites extras</h2>
+    <div class="sub">A equipe confere a disponibilidade e faz o aditivo com você. Nada é cobrado automaticamente.</div>
+    <div class="campo">
+      <label for="tipo">Qual convite</label>
+      <select id="tipo">${tipos.map((t) => `<option>${escapar(t)}</option>`).join('')}</select>
+    </div>
+    <div class="campo">
+      <label for="qtd">Quantos</label>
+      <input id="qtd" type="number" min="1" max="20" value="1" />
+    </div>
+    <div class="campo">
+      <label for="msg">Alguma observação</label>
+      <textarea id="msg" placeholder="Opcional"></textarea>
+    </div>
+    <div class="acoes dupla">
+      <button class="botao" id="enviar">Enviar pedido</button>
+      <button class="botao secundario" data-fechar-folha>Cancelar</button>
+    </div>`, (el) => {
+    el.querySelector('#enviar').addEventListener('click', async (e) => {
+      e.target.disabled = true; e.target.textContent = 'Enviando…';
+      try {
+        await chamar('/solicitacoes', {
+          method: 'POST',
+          body: JSON.stringify({
+            tipo: 'convites_extras',
+            conviteTipo: el.querySelector('#tipo').value,
+            quantidade: Number(el.querySelector('#qtd').value),
+            mensagem: `${el.querySelector('#qtd').value}× ${el.querySelector('#tipo').value}. ${el.querySelector('#msg').value}`.trim(),
+          }),
+        });
+        estado.contrato = await chamar('/contrato');
+        fecharFolha(); abaContrato(); avisar('Pedido enviado para a equipe');
+      } catch { avisar('Não foi possível enviar agora'); }
+    });
+  });
+}
+
+// ---------- aba: minha turma -------------------------------------------------
+function abaTurma() {
+  const t = estado.turma;
+  const proxima = t.cronograma.find((e) => e.data >= hoje());
+
+  moldura(`
+    <div class="colunas duas">
+      <div class="cartao">
+        <div class="kicker traco">Baile de gala</div>
+        <h2 class="serif" style="margin:6px 0 2px;font-size:30px">${dataLonga(t.dataEvento)}</h2>
+        <p style="margin:0 0 16px;color:var(--texto-suave)">${escapar(t.espaco || t.cidade)} · ${escapar(t.cidade)}</p>
+        <div class="dado"><span>Faltam</span><b>${diasAte(t.dataEvento)} dias</b></div>
+        <div class="dado"><span>Recepção</span><b>${escapar((t.cronograma.find((e) => e.tipo === 'baile') || {}).hora || 'a definir')}</b></div>
+      </div>
+      <div class="cartao">
+        <div class="dado"><span>Turma</span><b>${escapar(t.rotulo)}</b></div>
+        <div class="dado"><span>Curso</span><b>${escapar(t.cursos.join(' · '))}</b></div>
+        <div class="dado"><span>Formandos</span><b>${t.formandos}</b></div>
+        <div class="dado"><span>Consultora</span><b>${escapar(t.consultora)}</b></div>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="kicker traco">Pacote contratado</div>
+      <p style="margin:6px 0 0">${escapar(t.pacote)}</p>
+    </div>
+
+    ${t.comissao?.length ? `
+      <div class="secao-titulo">Comissão da turma</div>
+      <div class="pessoas">
+        ${t.comissao.map((p) => `
+          <div class="pessoa">
+            <span class="inicial">${escapar(p.nome.trim()[0] || '?')}</span>
+            <div>
+              <strong>${escapar(p.nome)}</strong>
+              <span>${escapar(p.papel)}</span>
+            </div>
+          </div>`).join('')}
+      </div>
+      <p class="rodape-nota" style="margin-top:10px">A comissão fala pela turma com a equipe: datas, cardápio, decoração e lista de convites passam por ela.</p>` : ''}
+
+    ${t.avisos?.length ? `
+      <div class="secao-titulo">Avisos da equipe</div>
+      <div class="cartao">
+        ${t.avisos.map((a) => `
+          <div class="aviso-turma">
+            <div class="data">${dataCurta(a.publicadoEm)}</div>
+            <h3>${escapar(a.titulo)}</h3>
+            <p>${escapar(a.texto)}</p>
+          </div>`).join('')}
+      </div>` : ''}
+
+    ${proxima ? `
+      <div class="secao-titulo">Próximo passo</div>
+      <div class="cartao">
+        <div class="kicker">${dataLonga(proxima.data)}</div>
+        <h3 class="serif" style="margin:4px 0 2px;font-size:22px">${escapar(proxima.etapa)}</h3>
+        <p style="margin:0 0 16px;color:var(--texto-suave);font-size:13.5px">${escapar(proxima.local || '')}${proxima.observacao ? ` — ${escapar(proxima.observacao)}` : ''}</p>
+        <button class="botao secundario" data-ir="cronograma">Ver o cronograma inteiro</button>
+      </div>` : ''}
+    ${notaRodape()}
+  `, escapar(t.rotulo));
+
+  app.querySelectorAll('[data-ir]').forEach((b) => b.addEventListener('click', () => irPara(b.dataset.ir)));
+}
+
+// ---------- central de avisos (o sino) ---------------------------------------
+// Só o que depende do formando: parcela vencida ou perto de vencer, resposta de
+// um pedido dele e etapa chegando. O mural da turma fica em Minha turma.
+const ICONE_AVISO = {
+  atraso: ICONES.financeiro, vencimento: ICONES.relogio,
+  pedido: ICONES.pedidos, etapa: ICONES.calendario,
+};
+
+async function telaAvisos() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let r;
+  try { r = await chamar('/notificacoes'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir seus avisos agora.</div>'); }
+  estado.avisos = r;
+
+  abrirFolha(`
+    <h2>Seus <em>avisos</em></h2>
+    <div class="sub">${r.naoLidas ? `${r.naoLidas} aviso${r.naoLidas > 1 ? 's' : ''} que você ainda não viu.` : 'Você está em dia com os avisos.'}</div>
+
+    ${r.itens.length ? r.itens.map((n) => `
+      <button class="notificacao t-${escapar(n.tipo)} ${n.lida ? 'lida' : ''}" data-aviso="${escapar(n.id)}" data-ir-aviso="${escapar(n.ir)}" ${n.billId ? `data-aviso-boleto="${escapar(n.billId)}"` : ''}>
+        <span class="ponto-novo"></span>
+        <span class="texto">
+          <strong>${escapar(n.titulo)}</strong>
+          <span>${escapar(n.texto)}</span>
+        </span>
+      </button>`).join('')
+      : '<div class="vazio">Nada por aqui ainda.</div>'}
+
+    <div class="acoes dupla">
+      ${r.naoLidas ? '<button class="botao secundario" id="marcar-lidos">Marcar tudo como lido</button>' : ''}
+      <button class="botao fantasma" data-fechar-folha>Fechar</button>
+    </div>
+  `, (el) => {
+    el.querySelector('#marcar-lidos')?.addEventListener('click', async () => {
+      try {
+        estado.avisos = await chamar('/notificacoes/lidas', { method: 'POST', body: JSON.stringify({ ids: r.itens.map((i) => i.id) }) });
+      } catch { /* sem drama: o sino continua como está */ }
+      estado.avisos = await chamar('/notificacoes').catch(() => estado.avisos);
+      fecharFolha();
+      irPara(estado.aba);
+    });
+
+    el.querySelectorAll('[data-aviso]').forEach((b) => b.addEventListener('click', async () => {
+      await chamar('/notificacoes/lidas', { method: 'POST', body: JSON.stringify({ ids: [b.dataset.aviso] }) }).catch(() => {});
+      estado.avisos = await chamar('/notificacoes').catch(() => estado.avisos);
+      const destino = b.dataset.irAviso;
+      fecharFolha();
+      if (destino === 'pedidos') return telaMeusPedidos();
+      await irPara(destino);
+      if (b.dataset.avisoBoleto) abrirBoleto(b.dataset.avisoBoleto);
+    }));
+  });
+}
+
+// ---------- dúvidas frequentes -----------------------------------------------
+// As perguntas que hoje chegam por WhatsApp. As respostas seguem o termo de
+// adesão — por isso citam a cláusula.
+const PERGUNTAS = [
+  { p: 'Como eu pago a parcela?', r: 'Pelo boleto: abra a parcela, copie a linha digitável ou baixe o PDF e pague pelo aplicativo do seu banco. Não trabalhamos com Pix.' },
+  { p: 'Perdi o boleto, e agora?', r: 'Nada se perde por aqui: a parcela sempre mostra a linha digitável e o PDF. Se já venceu, o botão de 2ª via gera um boleto novo com data nova.' },
+  { p: 'Paguei e a parcela continua em aberto', r: 'A baixa do banco pode levar até 3 dias úteis. Se passou disso, anexe o comprovante na própria parcela — a equipe confere e dá a baixa.' },
+  { p: 'Por que a parcela em atraso tem valor diferente?', r: 'O valor da parcela é o valor pleno com 20% de desconto por pagar até o vencimento. Pagando depois, o desconto não vale e entram correção pelo IPCA e juros de 1% ao mês.', c: '4.3' },
+  { p: 'Posso adiantar ou quitar tudo?', r: 'Pode. Em Financeiro, a opção "Antecipar" mostra a soma das próximas parcelas e do contrato inteiro mantendo o desconto de pontualidade. Escolhida a opção, o boleto único sai na hora.' },
+  { p: 'Posso mudar a data de vencimento?', r: 'A reprogramação da forma de pagamento é combinada com a equipe e tem taxa fixa de R$ 75,00 prevista no termo.', c: '17.3' },
+  { p: 'O que acontece se eu atrasar?', r: 'Enquanto houver parcela em aberto, a participação em eventos, ensaios e a retirada de convites ficam suspensas até regularizar.', c: '8.1' },
+  { p: 'Como peço convites extras?', r: 'Na aba Contrato, em "Seus convites". O pedido vai para a equipe, que confere disponibilidade e faz o aditivo. Nada é cobrado automaticamente.' },
+  { p: 'Preciso do comprovante para o imposto de renda', r: 'Em Financeiro, "Informe de pagamentos" soma o que você pagou em cada ano e gera o documento.' },
+  { p: 'As datas do cronograma podem mudar?', r: 'Podem: elas são confirmadas pela equipe junto com a comissão da turma. Toda mudança aparece no cronograma e nos avisos.' },
+];
+
+function telaPerguntas() {
+  abrirFolha(`
+    <h2>Dúvidas <em>frequentes</em></h2>
+    <div class="sub">As perguntas que mais chegam para a equipe. Se a sua não estiver aqui, fale com a gente.</div>
+    ${PERGUNTAS.map((q) => `
+      <details class="faq-item">
+        <summary>${escapar(q.p)}</summary>
+        <p>${escapar(q.r)}${q.c ? ` ${clausula(q.c)}` : ''}</p>
+      </details>`).join('')}
+    <div class="acoes dupla">
+      <button class="botao secundario" id="faq-zap">Falar com a gente</button>
+      <button class="botao fantasma" data-fechar-folha>Fechar</button>
+    </div>
+  `, (el) => el.querySelector('#faq-zap').addEventListener('click', abrirWhatsapp));
+}
+
+// ---------- informe anual de pagamentos --------------------------------------
+async function telaInformeIr() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let r;
+  try { r = await chamar('/informe-ir'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível montar o informe agora.</div>'); }
+
+  abrirFolha(`
+    <h2>Informe de <em>pagamentos</em></h2>
+    <div class="sub">O total pago em cada ano-calendário, para a declaração de imposto de renda.</div>
+
+    ${r.anos.length ? `
+      <div class="lista-antecipa">
+        ${r.anos.map((a) => `
+          <button class="opcao-antecipa" data-ano="${a.ano}">
+            <div class="quando">
+              <strong>${a.ano}</strong>
+              <span>${a.parcelas} parcela${a.parcelas > 1 ? 's' : ''} paga${a.parcelas > 1 ? 's' : ''}</span>
+            </div>
+            <div class="quanto"><b>${brl(a.total)}</b><span class="economia">abrir o informe</span></div>
+          </button>`).join('')}
+      </div>` : '<div class="cartao plano"><div class="vazio">Você ainda não tem parcelas pagas.</div></div>'}
+
+    <div class="dado"><span>Prestador</span><b>${escapar(r.prestador.razaoSocial)}</b></div>
+    <div class="dado"><span>CNPJ</span><b>${escapar(r.prestador.cnpj)}</b></div>
+
+    <p class="rodape-nota">O informe soma as parcelas com pagamento confirmado no ano. Confira com a
+    equipe antes de usar na declaração.</p>
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `, (el) => {
+    el.querySelectorAll('[data-ano]').forEach((b) => b.addEventListener('click', () => abrirInforme(b.dataset.ano)));
+  });
+}
+
+async function abrirInforme(ano) {
+  if (estado.config?.demo) {
+    try {
+      const d = await chamar(`/informe-ir/${ano}`);
+      return abrirFolha(`
+        <div class="boleto-papel">
+          <div class="boleto-marca">INDAIÁ EVENTOS · FORMATURAS</div>
+          <div class="boleto-sub">Informe de pagamentos ${escapar(ano)}</div>
+          <h2>Total pago em ${escapar(ano)}</h2>
+          <div class="sub">${escapar(d.formando)} · ${escapar(d.turma)}</div>
+          <div class="dado"><span>CPF</span><b>${escapar(d.cpf)}</b></div>
+          <div class="dado"><span>Prestador</span><b>${escapar(d.prestador.razaoSocial)}</b></div>
+          <div class="dado"><span>CNPJ</span><b>${escapar(d.prestador.cnpj)}</b></div>
+          <div class="dado"><span>Parcelas pagas</span><b>${d.parcelas}</b></div>
+          <div class="dado"><span>Total pago</span><b class="destaque-valor">${brl(d.total)}</b></div>
+          <div class="secao-titulo">Parcelas</div>
+          ${d.itens.map((i) => `<div class="dado"><span>Parcela ${i.parcela} · pago em ${dataCurta(i.pagoEm)}</span><b>${brl(i.valorPago)}</b></div>`).join('')}
+        </div>
+        <p class="rodape-nota">No app de verdade este botão baixa o informe em PDF.</p>
+        <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+      `);
+    } catch { return avisar('Não foi possível abrir o informe agora'); }
+  }
+  baixarArquivo(`/informe-ir/${ano}/pdf`, `informe-${ano}.pdf`);
+}
+
+// Todo PDF deste protótipo passa por aqui: o endpoint exige o token, então o
+// arquivo vem por fetch e abre numa aba nova.
+async function baixarArquivo(caminho, nome) {
+  avisar('Gerando o PDF…');
+  try {
+    const resposta = await fetch(API_BASE + caminho, { headers: { authorization: `Bearer ${estado.token}` } });
+    if (!resposta.ok) throw new Error('falha');
+    const url = URL.createObjectURL(await resposta.blob());
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.download = nome;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch { avisar('Não foi possível abrir o PDF agora'); }
+}
+
+// ---------- recibo de uma parcela paga ---------------------------------------
+async function abrirRecibo(id) {
+  if (!estado.config?.demo) return baixarArquivo(`/financeiro/${id}/recibo/pdf`, 'recibo.pdf');
+  try {
+    const r = await chamar(`/financeiro/${id}/recibo`);
+    abrirFolha(`
+      <div class="boleto-papel">
+        <div class="boleto-marca">INDAIÁ EVENTOS · FORMATURAS</div>
+        <div class="boleto-sub">Recibo de pagamento de parcela</div>
+        <h2>${escapar(r.numero)}</h2>
+        <div class="sub">${escapar(r.turma)}</div>
+        <div class="dado"><span>Formando</span><b>${escapar(r.formando)}</b></div>
+        <div class="dado"><span>CPF</span><b>${escapar(r.cpf)}</b></div>
+        <div class="dado"><span>Parcela</span><b>${r.parcela} de ${r.totalParcelas}</b></div>
+        <div class="dado"><span>Vencimento</span><b>${dataCurta(r.vencimento)}</b></div>
+        <div class="dado"><span>Pago em</span><b>${dataCurta(r.pagoEm)}</b></div>
+        <div class="dado"><span>Forma</span><b>${escapar(r.forma)}</b></div>
+        <div class="dado"><span>Valor pago</span><b class="destaque-valor">${brl(r.valorPago)}</b></div>
+      </div>
+      <p class="rodape-nota">No app de verdade este botão baixa o recibo em PDF.</p>
+      <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+    `);
+  } catch { avisar('Não foi possível abrir o recibo agora'); }
+}
+
+// ---------- instalar na tela de início (PWA) ---------------------------------
+// O site pode virar aplicativo sem loja: o navegador instala o atalho, abre em
+// tela cheia e — quando o envio estiver ligado no servidor — recebe notificação.
+// No Android o próprio navegador oferece instalar; no iPhone é pelo menu de
+// compartilhar, e só assim o iOS aceita notificação.
+const instalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const ehIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const ehAndroid = () => /android/i.test(navigator.userAgent);
+
+// o Android avisa quando dá para instalar; guardamos para usar no botão
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); estado.convite = e; });
+addEventListener('appinstalled', () => { estado.convite = null; avisar('Pronto: a Área do Formando está na sua tela de início'); });
+
+const PASSOS_INSTALAR = {
+  ios: [
+    'Abra este site no <b>Safari</b> (no iPhone só funciona por ele).',
+    'Toque no botão <b>Compartilhar</b>, o quadradinho com a seta para cima, na barra de baixo.',
+    'Role a lista e toque em <b>Adicionar à Tela de Início</b>.',
+    'Confirme em <b>Adicionar</b>, no canto de cima.',
+  ],
+  android: [
+    'Toque nos <b>três pontinhos</b> do canto do navegador.',
+    'Escolha <b>Instalar aplicativo</b> (ou "Adicionar à tela inicial").',
+    'Confirme em <b>Instalar</b>.',
+  ],
+  computador: [
+    'Na barra de endereço, clique no ícone de <b>instalar</b> (um monitor com uma seta).',
+    'Confirme em <b>Instalar</b>.',
+  ],
+};
+
+function telaInstalar() {
+  const plataforma = ehIos() ? 'ios' : ehAndroid() ? 'android' : 'computador';
+  const nomes = { ios: 'iPhone e iPad', android: 'Android', computador: 'computador' };
+  const outra = plataforma === 'ios' ? 'android' : 'ios';
+
+  abrirFolha(`
+    <h2>Deixar na <em>tela de início</em></h2>
+    <div class="sub">A Área do Formando vira um atalho com o ícone da Indaiá, abre em tela cheia e
+    funciona mesmo com internet ruim.</div>
+
+    ${instalado() ? '<div class="faixa info"><div>Já está instalada neste aparelho.</div></div>' : `
+      ${estado.convite ? '<div class="acoes"><button class="botao" id="instalar-agora">Instalar agora</button></div>' : ''}
+      <div class="secao-titulo">No ${nomes[plataforma]}</div>
+      <ol class="passos">${PASSOS_INSTALAR[plataforma].map((t) => `<li>${t}</li>`).join('')}</ol>
+      <details class="faq-item">
+        <summary>No ${nomes[outra]}</summary>
+        <ol class="passos" style="padding:0 16px 14px 34px">${PASSOS_INSTALAR[outra].map((t) => `<li>${t}</li>`).join('')}</ol>
+      </details>`}
+
+    <p class="rodape-nota">Depois de instalada, ela também pode avisar você quando um boleto ficar
+    disponível ou um pedido for respondido — no iPhone, os avisos só funcionam com o atalho instalado.</p>
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `, (el) => {
+    el.querySelector('#instalar-agora')?.addEventListener('click', async () => {
+      const convite = estado.convite;
+      if (!convite) return;
+      estado.convite = null;
+      convite.prompt();
+      const { outcome } = await convite.userChoice;
+      if (outcome !== 'accepted') avisar('Sem problema: dá para instalar depois por aqui');
+      fecharFolha();
+    });
+  });
+}
+
+function abrirWhatsapp(mensagem) {
+  const numero = estado.config?.whatsappAtendimento;
+  if (!numero) return avisar('WhatsApp do atendimento não configurado');
+  const padrao = `Oi! Sou ${estado.eu?.nome || ''}, da turma ${estado.eu?.turma?.codigo || ''}.`;
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensagem || padrao)}`, '_blank', 'noopener');
+}
+
+/**
+ * O pedido foi registrado — e acabou.
+ *
+ * Até 28/09 esta folha pedia para o formando "enviar a mensagem no WhatsApp":
+ * o pedido só existia de verdade quando ELE mandava. Agora o pedido vira
+ * DEMANDA no CRM na hora, com protocolo e responsável (decisão do usuário), e
+ * pedir que ele ainda faça algo seria pedir duas vezes a mesma coisa.
+ *
+ * `texto` continua no parâmetro porque quem chama monta a mensagem para outros
+ * usos; aqui ele não é mais oferecido.
+ */
+function folhaPedidoEnviado({ titulo, sub, protocolo, nota }) {
+  abrirFolha(`
+    <h2>${titulo}</h2>
+    <div class="sub">${sub}</div>
+    <div class="dado"><span>Protocolo</span><b>${escapar(protocolo)}</b></div>
+    <div class="faixa info" style="margin-top:14px">
+      <div>Pronto: a equipe já recebeu. Guarde o protocolo — é por ele que a gente
+      acha o seu pedido. A resposta aparece aqui em <b>Meus pedidos</b>.</div>
+    </div>
+    <div class="acoes">
+      <button class="botao" data-fechar-folha>Entendi</button>
+    </div>
+    ${nota ? `<p class="rodape-nota">${nota}</p>` : ''}
+  `);
+}
+
+// ---------- orquestração -----------------------------------------------------
+async function irPara(aba) {
+  estado.aba = aba;
+  try {
+    // O contador do sino é lido junto: ele aparece no topo de todas as abas.
+    estado.avisos = await chamar('/notificacoes').catch(() => estado.avisos);
+    if (aba === 'inicio') {
+      [estado.financeiro, estado.turma] = await Promise.all([chamar('/financeiro'), chamar('/turma')]);
+      abaInicio();
+    }
+    if (aba === 'financeiro') { estado.financeiro = await chamar('/financeiro'); abaFinanceiro(); }
+    if (aba === 'cronograma') { estado.turma = await chamar('/turma'); abaCronograma(); }
+    if (aba === 'contrato') { estado.contrato = await chamar('/contrato'); abaContrato(); }
+    if (aba === 'turma') { estado.turma = await chamar('/turma'); abaTurma(); }
+  } catch (err) {
+    if (err.status === 401) return sair();
+    if (err.message === 'adesao_cancelada') return telaCancelada();
+    avisar('Não foi possível carregar agora');
+  }
+}
+
+async function entrar() {
+  estado.eu = await chamar('/me');
+  if (estado.eu.situacao === 'cancelada') return telaCancelada();
+  await irPara('inicio');
+}
+
+function sair() {
+  esquecer();
+  estado.token = null; estado.eu = null; estado.financeiro = null;
+  estado.contrato = null; estado.turma = null;
+  estado.aba = 'inicio'; estado.filtro = 'aberto'; estado.menuAberto = false;
+  telaEntrar();
+}
+
+// O service worker deixa o site abrir sem internet e recebe a notificação quando
+// o envio for ligado. Falha calada: navegador antigo ou sem https segue normal.
+if ('serviceWorker' in navigator) {
+  addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+
+(async function iniciar() {
+  aplicarTema(temaAtual());
+  estado.visao = visaoGuardada();
+  try { estado.config = await chamar('/config'); } catch { /* segue sem config */ }
+  const guardado = recuperar();
+  if (guardado) {
+    estado.token = guardado;
+    try { return await entrar(); } catch { esquecer(); estado.token = null; }
+  }
+  telaEntrar();
+})();

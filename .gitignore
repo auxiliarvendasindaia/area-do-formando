@@ -1,0 +1,12 @@
+# Capturas das baterias de teste: o Playwright as deixa aqui ao rodar.
+*.png
+!publico/*.png
+!docs/*.png
+
+# A pasta antiga do site publicado. O repositório passou a ser ESTE projeto, e
+# o que vai ao ar mora em docs/ — site-github/ só existe até a gente apagar.
+site-github/
+
+# Pasta intermediária do build: `montar.mjs` a gera e `para-github.mjs` a copia
+# para docs/. O que vale é o fonte em publico/ e o resultado em docs/.
+publicar/saida/
