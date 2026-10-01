@@ -91,6 +91,101 @@
    */
   const comoOPortalLe = (c) => ({ ...c, status: 'em_analise', analisadoEm: null });
 
+  // ── avisos do sino ─────────────────────────────────────────────────────────
+  // NÃO há tabela de notificação: o aviso é derivado do estado atual. Parcela
+  // paga some da lista sozinha, pedido respondido idem — e nada fica para trás
+  // esperando alguém marcar como resolvido.
+  //
+  // O "já li" fica no NAVEGADOR (localStorage), não no servidor. É preferência
+  // de leitura, não dado do contrato: guardar no banco pediria tabela e rota
+  // para algo que só serve a quem está olhando a tela. O preço é que, em outro
+  // aparelho, o aviso volta a aparecer como novo.
+  const CHAVE_LIDOS = 'area-formando:avisos-lidos';
+
+  function lidos() {
+    try { return new Set(JSON.parse(localStorage.getItem(CHAVE_LIDOS) || '[]')); }
+    catch { return new Set(); }
+  }
+
+  function marcarLidos(ids) {
+    try {
+      const todos = lidos();
+      for (const id of ids) todos.add(String(id));
+      // Teto para a lista não crescer para sempre num aparelho só.
+      localStorage.setItem(CHAVE_LIDOS, JSON.stringify([...todos].slice(-200)));
+    } catch { /* navegador sem storage: os avisos só não ficam marcados */ }
+  }
+
+  const diasAteData = (iso) => {
+    if (!iso) return null;
+    const hoje = new Date();
+    hoje.setHours(12, 0, 0, 0);
+    return Math.round((new Date(`${iso}T12:00:00`) - hoje) / 86400000);
+  };
+
+  const dinheiro = (v) => `R$ ${Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
+
+  /** Quantos dias antes do vencimento o portal começa a lembrar. */
+  const AVISAR_ANTES = 7;
+
+  async function montarAvisos(token) {
+    const [fin, ped] = await Promise.all([
+      pedir('GET', '/financeiro', null, token).catch(() => ({ boletos: [] })),
+      pedir('GET', '/solicitacoes', null, token).catch(() => ({ solicitacoes: [] })),
+    ]);
+
+    const itens = [];
+
+    for (const b of fin.boletos || []) {
+      if (b.unico) continue;
+      const dias = diasAteData(b.vencimento);
+      if (b.status === 'em_atraso') {
+        itens.push({
+          // O id carrega a situação: quando a parcela muda de estado, o aviso
+          // vira outro e volta a aparecer como novo — que é o certo.
+          id: `atraso:${b.id}`,
+          tipo: 'atraso',
+          titulo: `Parcela ${b.parcela ?? ''} vencida`.trim(),
+          texto: `${dinheiro(b.totalBoleto)} · venceu há ${Math.abs(dias ?? 0)} dia${Math.abs(dias ?? 0) === 1 ? '' : 's'}. Já pagou? Anexe o comprovante.`,
+          ir: 'financeiro',
+          billId: b.id,
+        });
+      } else if (b.status === 'em_aberto' && dias !== null && dias >= 0 && dias <= AVISAR_ANTES) {
+        itens.push({
+          id: `vence:${b.id}:${b.vencimento}`,
+          tipo: 'vencimento',
+          titulo: dias === 0 ? `Parcela ${b.parcela ?? ''} vence hoje`.trim() : `Parcela ${b.parcela ?? ''} vence em ${dias} dia${dias === 1 ? '' : 's'}`.trim(),
+          texto: `${dinheiro(b.totalBoleto)} · o boleto já está disponível.`,
+          ir: 'financeiro',
+          billId: b.id,
+        });
+      }
+    }
+
+    for (const s of ped.solicitacoes || []) {
+      // Só o que MUDOU desde que ele pediu: pedido ainda pendente não é aviso,
+      // é o estado normal de quem acabou de pedir.
+      if (ABERTOS.includes(s.status)) continue;
+      const comoFicou = { concluida: 'foi resolvido', recusada: 'foi recusado', cancelada: 'foi cancelado' }[s.status];
+      if (!comoFicou) continue;
+      itens.push({
+        id: `pedido:${s.id}:${s.status}`,
+        tipo: 'pedido',
+        titulo: `${s.rotulo || 'Seu pedido'} ${comoFicou}`,
+        texto: s.observacao ? `${s.protocolo} · ${s.observacao}` : `${s.protocolo} · abra para ver os detalhes.`,
+        ir: 'pedidos',
+      });
+    }
+
+    const jaLidos = lidos();
+    const comLeitura = itens.map((n) => ({ ...n, lida: jaLidos.has(n.id) }));
+    // Vencida antes de a vencer, e pedido respondido no topo do que sobra.
+    const ordem = { atraso: 0, pedido: 1, vencimento: 2 };
+    comLeitura.sort((a, b) => (ordem[a.tipo] ?? 9) - (ordem[b.tipo] ?? 9));
+
+    return { itens: comLeitura, naoLidas: comLeitura.filter((n) => !n.lida).length };
+  }
+
   /** Pedido que ainda dá trabalho para a equipe — os mesmos nomes do CRM. */
   const ABERTOS = ['pendente', 'em_atendimento'];
 
@@ -134,6 +229,10 @@
   const doBoleto = (b) => ({
     ...b,
     valorDevido: Math.round(((b.totalBoleto || 0) - (b.taxaBoleto || 0)) * 100) / 100,
+    // `url` é a fatura na operadora: é POR ELA que o formando paga (código de
+    // barras e PDF — a casa não trabalha com Pix). Sem este mapeamento a tela
+    // mostrava a parcela e não oferecia nenhuma forma de pagar.
+    urlPagamento: b.url || null,
     // `unico`/`unicoAtivo` vêm da API desde 28/09 (mig 947): um diz que a
     // cobrança É o boleto único, o outro que a parcela está dentro de um.
     // `qtdComprovantes` vem da API desde 25/09 — é o que acende o selo
@@ -211,8 +310,19 @@
     }
 
     if (caminho === '/financeiro') {
-      const r = await pedir('GET', '/financeiro', null, token);
-      const boletos = (r.boletos || []).map(doBoleto);
+      // As contestações abertas entram junto: é o selo "Contestada" na lista.
+      // Buscar só no detalhe deixava a lista sem o aviso, e o formando abria
+      // uma parcela já contestada sem saber.
+      const [r, pedidos] = await Promise.all([
+        pedir('GET', '/financeiro', null, token),
+        pedir('GET', '/solicitacoes', null, token).catch(() => ({ solicitacoes: [] })),
+      ]);
+      const contestadas = new Map(
+        (pedidos.solicitacoes || [])
+          .filter((s) => s.tipo === 'contestacao' && s.billId && ABERTOS.includes(s.status))
+          .map((s) => [s.billId, { protocolo: s.protocolo, criadoEm: s.criadoEm, motivo: s.mensagem }]),
+      );
+      const boletos = (r.boletos || []).map((b) => ({ ...doBoleto(b), contestacao: contestadas.get(b.id) || null }));
       const resumo = r.resumo || {};
       return {
         resumo: {
@@ -286,17 +396,18 @@
     // ⚠️ Toda rota que o app chama no início PRECISA estar aqui, mesmo vazia: o
     // Início pede /financeiro e /turma juntos, e uma promessa rejeitada trava a
     // entrada inteira — foi o que aconteceu no primeiro teste.
+    // A turma vem do CRM desde 29/09, com o cronograma que a equipe preencheu
+    // na tela da turma. Antes era montada de /me e o cronograma vinha vazio, o
+    // que deixava a aba inteira sem conteúdo.
     if (caminho === '/turma') {
-      const eu = await pedir('GET', '/me', null, token);
+      const t = await pedir('GET', '/turma', null, token);
       return {
-        codigo: eu.turma?.codigo || '',
-        rotulo: eu.turma?.rotulo || '',
-        instituicao: eu.turma?.instituicao || null,
-        dataEvento: dataBR(eu.turma?.dataEvento),
-        cidade: '',
-        cronograma: [],
-        convites: [],
-        comissao: [],
+        ...t,
+        dataEvento: dataBR(t.dataEvento),
+        rotulo: t.rotulo || t.codigo || '',
+        cronograma: t.cronograma || [],
+        convites: t.convites || [],
+        comissao: t.comissao || [],
       };
     }
     // ── pedidos (viram demanda no CRM) ───────────────────────────────────────
@@ -316,7 +427,100 @@
       return { solicitacoes: r.solicitacoes || [] };
     }
 
-    if (caminho === '/notificacoes') return { avisos: [], naoLidos: 0 };
+    // ── config ───────────────────────────────────────────────────────────────
+    // Sem isto, `estado.config` ficava indefinido e três coisas quebravam sem
+    // parecer relacionadas: "Falar com a gente" avisava que o WhatsApp não
+    // estava configurado, o recibo tentava baixar um PDF inexistente, e os
+    // prazos do contrato citados na tela caíam nos valores embutidos no JS.
+    if (caminho === '/config') {
+      const r = await pedir('GET', '/config', null, token);
+      // O número pode vir nulo enquanto não estiver no ambiente do CRM: a tela
+      // esconde o botão em vez de oferecer uma conversa que não abre.
+      window.API_RECURSOS.falarComEquipe = Boolean(r.whatsappAtendimento);
+      return r;
+    }
+
+    // ── contrato ─────────────────────────────────────────────────────────────
+    // O CRM não tem rota de contrato para o formando. O que a tela precisa
+    // (quanto, em quantas vezes, e o link do termo) sai de /me e /financeiro.
+    // Sem isto a aba inteira morria em "não foi possível carregar".
+    if (caminho === '/contrato') {
+      const [eu, fin] = await Promise.all([
+        pedir('GET', '/me', null, token),
+        pedir('GET', '/financeiro', null, token),
+      ]);
+      const resumo = fin.resumo || {};
+      return {
+        termo: { assinadoEm: null, origem: null, url: null },
+        contratoColetivo: { turma: eu.turma?.rotulo || eu.turma?.codigo || '', url: null },
+        contratado: {
+          total: resumo.contratado || 0,
+          parcelas: resumo.parcelas || 0,
+          mensalidade: resumo.parcelas ? Math.round((resumo.contratado / resumo.parcelas) * 100) / 100 : 0,
+          taxaBoleto: resumo.taxaBoleto || 0,
+        },
+        convites: [],
+        clausulas: [],
+      };
+    }
+
+    // ── meus dados ───────────────────────────────────────────────────────────
+    // Leitura montada de /me; mudar contato e lembrete ainda não existe no CRM,
+    // e a tela esconde o que não vier.
+    if (caminho === '/perfil') {
+      const r = await pedir('GET', '/perfil', null, token);
+      // `lembrete` (avisar N dias antes do vencimento) ainda não existe no CRM:
+      // depende de onde guardar a preferência e de quem dispara o aviso.
+      return { ...r, lembrete: null };
+    }
+
+    if (caminho === '/perfil/contato' && (metodo === 'POST' || metodo === 'PATCH')) {
+      return pedir('PATCH', '/perfil/contato', corpo || {}, token);
+    }
+
+    // ── extrato ──────────────────────────────────────────────────────────────
+    // O CRM não tem rota de extrato: ele é um recorte do que /financeiro já
+    // devolve. Montar aqui evita uma rota que só existiria para reempacotar
+    // dado — e sem isto a tela "Extrato e comprovantes" morria em 501.
+    if (caminho === '/extrato') {
+      const r = await pedir('GET', '/financeiro', null, token);
+      const resumo = r.resumo || {};
+      const boletos = (r.boletos || []).filter((b) => !b.unico);
+      const pagos = boletos.filter((b) => b.status === 'pago');
+      return {
+        emitidoEm: new Date().toISOString(),
+        contrato: {
+          total: resumo.contratado || 0,
+          parcelas: resumo.parcelas || boletos.length,
+          mensalidade: resumo.parcelas ? Math.round((resumo.contratado / resumo.parcelas) * 100) / 100 : 0,
+          // O CRM guarda a data da assinatura na adesão, não no financeiro.
+          assinadoEm: null,
+        },
+        totais: {
+          parcelasPagas: resumo.parcelasPagas || pagos.length,
+          pago: resumo.pago || 0,
+          emAberto: Math.round(((resumo.emAberto || 0) + (resumo.emAtraso || 0) + (resumo.emAnalise || 0) + (resumo.aEmitir || 0)) * 100) / 100,
+        },
+        pagamentos: pagos.map((b) => ({
+          parcela: b.parcela,
+          vencimento: b.vencimento,
+          pagoEm: b.pagoEm,
+          valor: b.totalBoleto,
+        })),
+      };
+    }
+
+    // ── avisos (o sino) ──────────────────────────────────────────────────────
+    // Decisão da equipe (29/09): o sino avisa duas coisas — fatura em aberto e
+    // resposta a um pedido feito à equipe. Os dois saem do que a API já
+    // devolve, então não há rota nova nem tabela: o aviso é DERIVADO do estado.
+    // Parcela paga some sozinha da lista; pedido respondido idem.
+    if (caminho === '/notificacoes') return montarAvisos(token);
+
+    if (caminho === '/notificacoes/lidas' && metodo === 'POST') {
+      marcarLidos(corpo?.ids || []);
+      return montarAvisos(token);
+    }
     if (caminho === '/comprovantes') {
       const r = await pedir('GET', '/comprovantes', null, token);
       return { comprovantes: (r.comprovantes || []).map(comoOPortalLe) };
@@ -335,7 +539,27 @@
    *
    * Cada uma some daqui quando a rota nascer, e a tela volta sozinha.
    */
-  window.API_RECURSOS = { segundaVia: true, boletoUnico: true, encargos: true };
+  window.API_RECURSOS = {
+    segundaVia: true,
+    boletoUnico: true,
+    encargos: true,
+    editarContato: true,
+    // O recibo em PDF não existe no CRM: o botão some em vez de baixar nada.
+    recibo: false,
+    // Ligado pela resposta de /config, que diz se há número de atendimento.
+    falarComEquipe: false,
+    // Informe de IR: falta a equipe definir QUAL CNPJ do grupo emite a
+    // cobrança da formatura. Informe de imposto com CNPJ errado é pior que
+    // informe nenhum.
+    informeIr: false,
+    // O sino avisa fatura em aberto e resposta a pedido (decisão de 29/09).
+    notificacoes: true,
+    // Lembrete de vencimento: falta onde guardar a preferência e quem dispara.
+    lembrete: false,
+    // Confirmar presença e convites nomeados: sem lugar no CRM para cadastrar.
+    presenca: false,
+    convites: false,
+  };
 
   window.API_CRM = traduzir;
 })();

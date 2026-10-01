@@ -1010,3 +1010,12 @@ button, .item, summary { -webkit-tap-highlight-color: rgba(123, 78, 194, .15); }
 
 /* parcela com contestação aberta */
 .s-contestada { background: rgba(163, 66, 60, .16); color: var(--negativo); margin-left: 6px; }
+
+/* Link dentro de um parágrafo — um botão que não parece botão. Usado no
+   "prefere conversar?" da tela de ajuda, onde o WhatsApp é a saída secundária
+   e não pode competir com a lista de motivos. */
+.link-inline {
+  background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+  color: var(--accent-txt); text-decoration: underline; text-underline-offset: 2px;
+}
+.link-inline:hover { opacity: .8; }

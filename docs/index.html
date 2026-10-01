@@ -1031,6 +1031,15 @@ button, .item, summary { -webkit-tap-highlight-color: rgba(123, 78, 194, .15); }
 /* parcela com contestação aberta */
 .s-contestada { background: rgba(163, 66, 60, .16); color: var(--negativo); margin-left: 6px; }
 
+/* Link dentro de um parágrafo — um botão que não parece botão. Usado no
+   "prefere conversar?" da tela de ajuda, onde o WhatsApp é a saída secundária
+   e não pode competir com a lista de motivos. */
+.link-inline {
+  background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+  color: var(--accent-txt); text-decoration: underline; text-underline-offset: 2px;
+}
+.link-inline:hover { opacity: .8; }
+
 </style>
 </head>
 <body>
@@ -2274,11 +2283,11 @@ function telaCancelada() {
         <h1>Sua adesão foi cancelada</h1>
         <p class="sub">${escapar(estado.eu?.canceladaEm ? `Cancelamento registrado em ${dataCurta(estado.eu.canceladaEm)}.` : '')}</p>
         <p style="margin:0 0 18px">Por isso o financeiro e os documentos não aparecem aqui. Se você acha que houve engano, fale com a gente — a equipe de formaturas resolve pelo WhatsApp.</p>
-        <button class="botao" id="zap">Falar com a equipe</button>
+        ${temRecurso('falarComEquipe') ? '<button class="botao" id="zap">Falar com a equipe</button>' : ''}
         <button class="botao fantasma" id="sair">Sair</button>
       </div>
     </div>`;
-  app.querySelector('#zap').addEventListener('click', abrirWhatsapp);
+  app.querySelector('#zap')?.addEventListener('click', abrirWhatsapp);
   app.querySelector('#sair').addEventListener('click', sair);
 }
 
@@ -2494,7 +2503,7 @@ function moldura(conteudo, sub) {
         <button id="duvidas">${ICONES.duvida}<span>Dúvidas frequentes</span></button>
         ${instalado() ? '' : `<button id="instalar">${ICONES.celular}<span>Instalar no celular</span></button>`}
         <button id="tema">${ICONES.tema}<span>${temaAtual() === 'escuro' ? 'Tema claro' : 'Tema escuro'}</span></button>
-        <button id="zap">${ICONES.zap}<span>Falar com a gente</span></button>
+        <button id="ajuda">${ICONES.duvida}<span>Preciso de ajuda</span></button>
         <button id="sair">${ICONES.sair}<span>Sair</span></button>
       </div>
     </aside>
@@ -2512,10 +2521,11 @@ function moldura(conteudo, sub) {
             <span class="kicker">Formando</span>
             <strong>${escapar(semMarca(estado.eu?.nome))}</strong>
           </div>
+          ${temRecurso('notificacoes') ? `
           <button class="sino" id="sino" aria-label="Avisos">
             ${ICONES.sino}
             ${naoLidas ? `<span class="contador">${naoLidas > 9 ? '9+' : naoLidas}</span>` : ''}
-          </button>
+          </button>` : ''}
         </div>
       </header>
       <main>${conteudo}</main>
@@ -2523,13 +2533,13 @@ function moldura(conteudo, sub) {
     </div>`;
 
   app.querySelectorAll('[data-aba]').forEach((b) => b.addEventListener('click', () => { estado.menuAberto = false; irPara(b.dataset.aba); }));
-  app.querySelector('#sino').addEventListener('click', telaAvisos);
+  app.querySelector('#sino')?.addEventListener('click', telaAvisos);
   app.querySelector('#meus-pedidos').addEventListener('click', telaMeusPedidos);
   app.querySelector('#meus-dados').addEventListener('click', telaMeusDados);
   app.querySelector('#duvidas').addEventListener('click', telaPerguntas);
+  app.querySelector('#ajuda').addEventListener('click', telaAjuda);
   app.querySelector('#instalar')?.addEventListener('click', telaInstalar);
   app.querySelector('#tema').addEventListener('click', alternarTema);
-  app.querySelector('#zap').addEventListener('click', abrirWhatsapp);
   app.querySelector('#sair').addEventListener('click', sair);
   app.querySelector('#abrir-menu').addEventListener('click', () => { estado.menuAberto = true; app.classList.add('menu-aberto'); });
   app.querySelector('#cortina').addEventListener('click', () => { estado.menuAberto = false; app.classList.remove('menu-aberto'); });
@@ -2727,8 +2737,12 @@ function abaFinanceiro() {
     && parcelas.some((b) => !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status));
 
   const emAberto = resumo.emAberto + resumo.emAtraso + (resumo.emAnalise || 0) + resumo.aEmitir;
-  // Parcelas do contrato ainda não pagas — o par do valor "Em aberto" ao lado.
-  const aPagarNoContrato = Math.max(0, (resumo.parcelas || parcelas.length) - resumo.parcelasPagas);
+  // As parcelas que o valor "Em aberto" ao lado REALMENTE soma: as que existem
+  // e não foram pagas. O contrato pode ter mais — a soma nunca inclui parcela
+  // que ainda não virou boleto, porque ela não tem valor conhecido. Contar as do
+  // contrato aqui fazia a tela dizer "R$ 825,37 · 12 parcelas" quando só três
+  // existiam, sugerindo R$ 68 cada. Quem fala do contrato é a nota do rodapé.
+  const aPagarAgora = parcelas.filter((b) => b.status !== 'pago').length;
   // Quanto do contrato ainda não virou boleto — a nota do rodapé só aparece se
   // houver diferença, para não poluir quem já tem tudo emitido.
   const porGerar = Math.max(0, (resumo.parcelas || parcelas.length) - parcelas.length);
@@ -2754,10 +2768,7 @@ function abaFinanceiro() {
         <div>
           <div class="rot">Em aberto</div>
           <b>${brl(emAberto)}</b>
-          <!-- Parcelas do CONTRATO, para casar com o valor acima, que é o que
-               falta pagar do contrato inteiro. A lista abaixo mostra menos (a
-               cobrança sai em lotes) — quem explica isso é a nota do rodapé. -->
-          <small>${aPagarNoContrato} parcela${aPagarNoContrato === 1 ? '' : 's'}</small>
+          <small>${aPagarAgora} parcela${aPagarAgora === 1 ? '' : 's'}</small>
         </div>
       </div>
       <div class="trilho"><i style="width:${pct.toFixed(1)}%"></i></div>
@@ -2810,10 +2821,11 @@ function abaFinanceiro() {
         <span class="ico">${ICONES.extrato}</span>
         <span><strong>Extrato e comprovantes</strong><span class="desc">O que você pagou e o que anexou</span></span>
       </button>
+      ${temRecurso('informeIr') ? `
       <button class="acao-financeira" id="informe-ir">
         <span class="ico">${ICONES.informe}</span>
         <span><strong>Informe de pagamentos</strong><span class="desc">Para a declaração anual</span></span>
-      </button>
+      </button>` : ''}
     </div>
 
     ${unicos.length ? `
@@ -3088,7 +3100,10 @@ async function abrirBoleto(id, { individual = false } = {}) {
 
   const atraso = b.status === 'em_atraso';
   const semBoleto = b.status === 'agendado' || b.status === 'nao_gerado';
-  const pagavel = b.status === 'em_aberto' && b.linhaDigitavel;
+  // Pagável = dá para pagar agora. O protótipo só conhecia a linha digitável;
+  // o CRM devolve o LINK da fatura na operadora, que abre o boleto com código
+  // de barras. Sem isto o formando via a parcela e não tinha como pagar.
+  const pagavel = b.status === 'em_aberto' && (b.linhaDigitavel || b.urlPagamento);
   // Não dá para impedir o pagamento de um boleto que já existe (ele pode estar
   // salvo, impresso ou no app do banco). O que dá é segurar a linha digitável
   // e a 2ª via desta parcela atrás de um aviso quando ela está num boleto único.
@@ -3114,7 +3129,10 @@ async function abrirBoleto(id, { individual = false } = {}) {
   } else if (b.encargos) {
     // já tem 2ª via: a conta é a da data nova
     valores = composicaoAtraso(b.encargos, 'Valor da 2ª via', b.taxaBoleto);
-  } else if (atraso && b.encargosHoje) {
+  } else if (b.encargosHoje) {
+    // Vale também para "em análise": a parcela continua vencida e o valor
+    // continua sendo o da 4.3 — esconder a composição deixava o formando
+    // olhando para R$ 319,57 numa parcela de R$ 250 sem explicação.
     valores = composicaoAtraso(b.encargosHoje, 'Valor hoje', b.taxaBoleto);
   } else if (b.status === 'pago') {
     valores = `<div class="dado"><span>Valor pago</span><b class="destaque-valor">${brl(b.valorPago || b.valor)}</b></div>`;
@@ -3151,14 +3169,22 @@ async function abrirBoleto(id, { individual = false } = {}) {
         </div>
         <div class="acoes"><button class="botao secundario" id="falar-equipe">Falar com a equipe</button></div>`}`;
   } else if (pagavel) {
-    acoes = `
+    acoes = b.linhaDigitavel
+      ? `
       <div class="secao-titulo">Linha digitável</div>
       <div class="linha-digitavel" id="linha">${escapar(b.linhaDigitavel)}</div>
       <div class="acoes dupla">
         <button class="botao" id="copiar">Copiar linha</button>
         <button class="botao secundario" id="pdf">Abrir PDF</button>
       </div>
-      <div class="acoes"><button class="botao secundario" id="compartilhar">Compartilhar</button></div>`;
+      <div class="acoes"><button class="botao secundario" id="compartilhar">Compartilhar</button></div>`
+      // Só o link: é a fatura na operadora, com o código de barras e o PDF.
+      // Abre em aba nova para o formando não perder o portal. A casa NÃO
+      // trabalha com Pix — não prometer aqui o que a cobrança não aceita.
+      : `
+      <div class="acoes"><a class="botao" id="abrir-boleto" href="${escapar(b.urlPagamento)}" target="_blank" rel="noopener">Abrir boleto para pagar</a></div>
+      <p class="rodape-nota">O boleto abre em outra aba, com o código de barras para pagar no
+      aplicativo do seu banco e a opção de salvar em PDF.</p>`;
   } else if (semBoleto) {
     // Decisão da equipe: só se paga o que já tem boleto gerado. Para adiantar,
     // o caminho é o boleto único.
@@ -3174,7 +3200,7 @@ async function abrirBoleto(id, { individual = false } = {}) {
   } else if (b.status === 'pago') {
     acoes = `
       <div class="faixa info" style="margin-top:16px">${b.unico ? 'Boleto quitado.' : 'Parcela quitada.'}</div>
-      ${b.unico ? '' : '<div class="acoes"><button class="botao secundario" id="recibo">Baixar recibo desta parcela</button></div>'}`;
+      ${b.unico || !temRecurso('recibo') ? '' : '<div class="acoes"><button class="botao secundario" id="recibo">Baixar recibo desta parcela</button></div>'}`;
   }
 
   const comprovantesDaCobranca = (b.comprovantes || []);
@@ -3522,6 +3548,138 @@ async function verComprovante(id) {
   a.href = url; a.target = '_blank'; a.rel = 'noopener';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+// ---------- preciso de ajuda -------------------------------------------------
+// Decisão da equipe (30/09/2026): em vez de mandar o formando para o WhatsApp,
+// uma LISTA de motivos. Cada um vira demanda no CRM, com protocolo e
+// responsável — a fila fica organizada e o financeiro para de receber o mesmo
+// assunto por três caminhos diferentes.
+//
+// Os rótulos são o que o FORMANDO diria, não o nome do tipo no sistema: ele não
+// pensa "renegociação", pensa "não estou conseguindo pagar". O tipo técnico vai
+// junto, para a equipe filtrar a fila.
+//
+// "Outro motivo" existe porque nenhuma lista cobre tudo, e sem ela a pessoa
+// desiste ou escolhe o item errado — que é pior, porque some da estatística.
+const MOTIVOS_DE_AJUDA = [
+  {
+    tipo: 'renegociacao',
+    titulo: 'Não estou conseguindo pagar',
+    desc: 'Quero combinar uma forma de colocar em dia',
+    exemplo: 'Conte a sua situação e o que consegue pagar por mês.',
+  },
+  {
+    tipo: 'contestacao',
+    titulo: 'Paguei e continua aparecendo em aberto',
+    desc: 'A baixa não saiu',
+    exemplo: 'Diga a parcela e a data em que pagou. Se tiver o comprovante, anexe na parcela.',
+  },
+  {
+    tipo: 'pagamento_duplicado',
+    titulo: 'Paguei a mesma parcela duas vezes',
+    desc: 'Preciso de devolução',
+    exemplo: 'Diga qual parcela e as duas datas de pagamento.',
+  },
+  {
+    tipo: 'convites_extras',
+    titulo: 'Quero convites extras',
+    desc: 'Comprar convite além dos do pacote',
+    exemplo: 'Diga quantos convites e de qual evento.',
+  },
+  {
+    tipo: 'quitacao',
+    titulo: 'Preciso da declaração de quitação',
+    desc: 'Comprovante de que está tudo pago',
+    exemplo: 'Se for para algum fim específico, conte qual.',
+  },
+  {
+    tipo: 'dados_contato',
+    titulo: 'Meus dados estão errados',
+    desc: 'Nome, CPF ou algo do cadastro',
+    exemplo: 'Diga o que está errado e qual é o certo. E-mail e telefone você mesmo corrige em "Meus dados".',
+  },
+  {
+    tipo: 'outro',
+    titulo: 'Outro motivo',
+    desc: 'Conte o que você precisa',
+    exemplo: 'Escreva com as suas palavras — quanto mais detalhe, mais rápido a equipe resolve.',
+  },
+];
+
+async function telaAjuda() {
+  abrirFolha(`
+    <h2>Preciso de <em>ajuda</em></h2>
+    <div class="sub">Escolha o assunto. A equipe recebe o seu pedido com um número de protocolo, e a
+    resposta aparece aqui em <b>Meus pedidos</b>.</div>
+
+    <div class="lista-antecipa">
+      ${MOTIVOS_DE_AJUDA.map((m, i) => `
+        <button class="opcao-antecipa" data-motivo="${i}">
+          <div class="quando">
+            <strong>${escapar(m.titulo)}</strong>
+            <span>${escapar(m.desc)}</span>
+          </div>
+          <div class="quanto"><span class="seta">›</span></div>
+        </button>`).join('')}
+    </div>
+
+    ${temRecurso('falarComEquipe') ? `<p class="rodape-nota">Prefere conversar? <button class="link-inline" id="ajuda-zap">Fale com a equipe no WhatsApp</button>.</p>` : ''}
+    <div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>
+  `, (el) => {
+    el.querySelector('#ajuda-zap')?.addEventListener('click', () => abrirWhatsapp());
+    el.querySelectorAll('[data-motivo]').forEach((b) =>
+      b.addEventListener('click', () => formularioAjuda(MOTIVOS_DE_AJUDA[Number(b.dataset.motivo)])));
+  });
+}
+
+function formularioAjuda(motivo, erro) {
+  abrirFolha(`
+    <h2>${escapar(motivo.titulo)}</h2>
+    <div class="sub">${escapar(motivo.exemplo)}</div>
+
+    <div class="campo">
+      <label for="ajuda-texto">O que você precisa${motivo.tipo === 'outro' ? '' : ' <small>(opcional)</small>'}</label>
+      <textarea id="ajuda-texto" rows="5" placeholder="Escreva aqui"></textarea>
+    </div>
+    ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+
+    <div class="acoes dupla">
+      <button class="botao" id="enviar-ajuda">Enviar pedido</button>
+      <button class="botao secundario" id="voltar-ajuda">Voltar</button>
+    </div>
+    <p class="rodape-nota">Você recebe um número de protocolo e acompanha a resposta em
+    <b>Meus pedidos</b>.</p>
+  `, (el) => {
+    el.querySelector('#voltar-ajuda').addEventListener('click', telaAjuda);
+    el.querySelector('#enviar-ajuda').addEventListener('click', async (e) => {
+      const texto = el.querySelector('#ajuda-texto').value.trim();
+      // Em "Outro motivo" o texto é a única informação que a equipe terá.
+      if (motivo.tipo === 'outro' && texto.length < 5) {
+        return formularioAjuda(motivo, 'Conte um pouco do que você precisa para a equipe poder ajudar.');
+      }
+      e.target.disabled = true; e.target.textContent = 'Enviando…';
+      try {
+        const r = await chamar('/solicitacoes', {
+          method: 'POST',
+          body: JSON.stringify({
+            tipo: motivo.tipo,
+            // O título vai junto: em "outro", é o que a fila mostra antes de
+            // alguém abrir o pedido.
+            mensagem: [motivo.titulo, texto].filter(Boolean).join(' — '),
+          }),
+        });
+        folhaPedidoEnviado({
+          titulo: 'Pedido <em>registrado</em>',
+          sub: escapar(motivo.titulo),
+          protocolo: r.protocolo,
+        });
+      } catch (err) {
+        e.target.disabled = false; e.target.textContent = 'Enviar pedido';
+        formularioAjuda(motivo, err.detalhe || 'Não foi possível enviar agora. Tente de novo.');
+      }
+    });
+  });
 }
 
 // ---------- meus pedidos -----------------------------------------------------
@@ -4046,6 +4204,26 @@ function abaCronograma() {
     return `em ${meses} meses`;
   };
 
+  // Turma nova não tem data nenhuma marcada ainda. Dizer "0 etapas até a
+  // formatura" soa como erro do sistema; dizer que as datas vêm depois é o que
+  // está acontecendo de verdade.
+  if (!etapas.length) {
+    return moldura(`
+      <div class="cartao">
+        <div class="kicker traco">Da adesão ao baile</div>
+        <h2 class="serif" style="margin:8px 0 4px;font-size:30px">As datas ainda estão sendo <em>fechadas</em></h2>
+        <p style="margin:0;color:var(--texto-suave);font-size:13.5px">
+          A equipe confirma cada etapa junto com a comissão da turma. Assim que uma data fecha, ela
+          aparece aqui — e você recebe o aviso.
+        </p>
+        <div class="contagem" style="margin-top:16px">
+          <div><b>${diasAte(t.dataEvento)}</b><span>dias para o baile</span></div>
+        </div>
+      </div>
+      ${notaRodape()}
+    `, 'as datas vêm da comissão');
+  }
+
   moldura(`
     <div class="cartao">
       <div class="kicker traco">Da adesão ao baile</div>
@@ -4414,7 +4592,7 @@ async function telaAvisos() {
 // As perguntas que hoje chegam por WhatsApp. As respostas seguem o termo de
 // adesão — por isso citam a cláusula.
 const PERGUNTAS = [
-  { p: 'Como eu pago a parcela?', r: 'Pelo boleto: abra a parcela, copie a linha digitável ou baixe o PDF e pague pelo aplicativo do seu banco. Não trabalhamos com Pix.' },
+  { p: 'Como eu pago a parcela?', r: 'Pelo boleto: abra a parcela e use o botão para ver o boleto. Lá estão o código de barras e a opção de salvar em PDF — pague pelo aplicativo do seu banco. Não trabalhamos com Pix.' },
   { p: 'Perdi o boleto, e agora?', r: 'Nada se perde por aqui: a parcela sempre mostra a linha digitável e o PDF. Se já venceu, o botão de 2ª via gera um boleto novo com data nova.' },
   { p: 'Paguei e a parcela continua em aberto', r: 'A baixa do banco pode levar até 3 dias úteis. Se passou disso, anexe o comprovante na própria parcela — a equipe confere e dá a baixa.' },
   { p: 'Por que a parcela em atraso tem valor diferente?', r: 'O valor da parcela é o valor pleno com 20% de desconto por pagar até o vencimento. Pagando depois, o desconto não vale e entram correção pelo IPCA e juros de 1% ao mês.', c: '4.3' },
@@ -4436,10 +4614,10 @@ function telaPerguntas() {
         <p>${escapar(q.r)}${q.c ? ` ${clausula(q.c)}` : ''}</p>
       </details>`).join('')}
     <div class="acoes dupla">
-      <button class="botao secundario" id="faq-zap">Falar com a gente</button>
+      ${temRecurso('falarComEquipe') ? '<button class="botao secundario" id="faq-zap">Falar com a gente</button>' : ''}
       <button class="botao fantasma" data-fechar-folha>Fechar</button>
     </div>
-  `, (el) => el.querySelector('#faq-zap').addEventListener('click', abrirWhatsapp));
+  `, (el) => el.querySelector('#faq-zap')?.addEventListener('click', abrirWhatsapp));
 }
 
 // ---------- informe anual de pagamentos --------------------------------------
