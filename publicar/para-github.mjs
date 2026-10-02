@@ -20,6 +20,16 @@ const RAIZ = path.resolve(AQUI, '..');
 const SAIDA = path.join(AQUI, 'saida');
 const DESTINO = path.join(RAIZ, 'docs');
 
+/**
+ * O endereço oficial do portal, quando houver.
+ *
+ * Vazio = o site continua em `auxiliarvendasindaia.github.io/area-do-formando`.
+ * Preencher ANTES de o DNS resolver tira o site do ar, porque o Pages passa a
+ * responder só no domínio novo (ver o comentário mais abaixo, onde o CNAME é
+ * escrito). `DOMINIO_PORTAL=...` no ambiente serve para testar sem editar isto.
+ */
+const DOMINIO_OFICIAL = '';
+
 const FAVICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23160C24'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='17' fill='%23E4C878' text-anchor='middle'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
 
 const CABECA = `<!doctype html>
@@ -59,6 +69,19 @@ for (const f of ['manifest.webmanifest', 'sw.js', 'icone-192.png', 'icone-512.pn
 }
 // o .nojekyll evita que o Pages ignore arquivos; recriado se alguém apagar
 fs.writeFileSync(path.join(DESTINO, '.nojekyll'), '');
+
+// O endereço oficial. O GitHub guarda o domínio próprio num arquivo DENTRO da
+// pasta publicada, então ele é escrito aqui junto com o resto: se dependesse de
+// alguém lembrar, uma publicação futura levaria o site de volta para o endereço
+// github.io — e o link que os formandos têm pararia de funcionar.
+//
+// SÓ VALE COM O DNS DE PÉ: um CNAME apontando para um domínio que não resolve
+// deixa o site inacessível, porque o Pages passa a responder apenas nele. Por
+// isso o domínio entra aqui depois que `areaformando.eventosindaia.com.br`
+// estiver resolvendo na Cloudflare (registro CNAME → auxiliarvendasindaia.github.io,
+// sem proxy: a nuvem laranja impede a emissão do certificado).
+const DOMINIO = process.env.DOMINIO_PORTAL || DOMINIO_OFICIAL;
+if (DOMINIO) fs.writeFileSync(path.join(DESTINO, 'CNAME'), `${DOMINIO}\n`);
 
 const kb = (p) => Math.round(fs.statSync(p).size / 1024);
 console.log('OK — docs/');

@@ -39,6 +39,14 @@
       // dias"). Guardar a frase deixa a tela mostrar ISSO em vez de um "não foi
       // possível" genérico — o protótipo devolvia códigos, e o app traduzia.
       if (envelope.message) erro.detalhe = envelope.message;
+      // Alguns erros não são "deu errado", são "falta um dado seu": o CRM manda
+      // um código em `data` e a tela reage a ele (pedir o endereço, por
+      // exemplo) em vez de só mostrar a frase. O código não muda quando alguém
+      // melhora o texto — por isso não dá para decidir pela mensagem.
+      if (envelope.data && envelope.data.codigo) {
+        erro.codigo = envelope.data.codigo;
+        erro.falta = envelope.data.falta || [];
+      }
       throw erro;
     }
     return envelope.data ?? {};
@@ -478,6 +486,13 @@
       return pedir('PATCH', '/perfil/contato', corpo || {}, token);
     }
 
+    // O endereço é o que faz a operadora mostrar o boleto. Quem assinou antes de
+    // o link exigir os campos separados informa aqui, e a resposta já diz se a
+    // operadora foi atualizada.
+    if (caminho === '/perfil/endereco' && (metodo === 'POST' || metodo === 'PATCH')) {
+      return pedir('PATCH', '/perfil/endereco', corpo || {}, token);
+    }
+
     // ── extrato ──────────────────────────────────────────────────────────────
     // O CRM não tem rota de extrato: ele é um recorte do que /financeiro já
     // devolve. Montar aqui evita uma rota que só existiria para reempacotar
@@ -544,6 +559,9 @@
     boletoUnico: true,
     encargos: true,
     editarContato: true,
+    // O endereço o formando informa sozinho, e ele sobe para a operadora na
+    // hora — é o que destrava o boleto de quem assinou sem endereço completo.
+    editarEndereco: true,
     // O recibo em PDF não existe no CRM: o botão some em vez de baixar nada.
     recibo: false,
     // Ligado pela resposta de /config, que diz se há número de atendimento.

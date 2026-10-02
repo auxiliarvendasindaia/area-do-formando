@@ -544,7 +544,11 @@ function moldura(conteudo, sub) {
   app.querySelectorAll('[data-aba]').forEach((b) => b.addEventListener('click', () => { estado.menuAberto = false; irPara(b.dataset.aba); }));
   app.querySelector('#sino')?.addEventListener('click', telaAvisos);
   app.querySelector('#meus-pedidos').addEventListener('click', telaMeusPedidos);
-  app.querySelector('#meus-dados').addEventListener('click', telaMeusDados);
+  // `() => telaMeusDados()` e não `telaMeusDados`: o primeiro parâmetro dela é a
+  // mensagem de erro, e passar o handler direto fazia o evento do clique virar
+  // essa mensagem — a tela abria com "[object PointerEvent]" escrito em cima do
+  // botão.
+  app.querySelector('#meus-dados').addEventListener('click', () => telaMeusDados());
   app.querySelector('#duvidas').addEventListener('click', telaPerguntas);
   app.querySelector('#ajuda').addEventListener('click', telaAjuda);
   app.querySelector('#instalar')?.addEventListener('click', telaInstalar);
@@ -983,8 +987,16 @@ function confirmarAntecipacao(opcao, sim) {
         abaFinanceiro();
         avisar('Boleto único gerado');
         abrirBoleto(novo.id);
-      } catch {
+      } catch (err) {
         e.target.disabled = false; e.target.textContent = 'Gerar boleto único';
+        // Igual à 2ª via: endereço que falta não é erro, é um passo que ficou
+        // para trás. Nada foi gerado, e as parcelas seguem como estavam.
+        if (codigoDoErro(err) === 'endereco_incompleto') {
+          return telaEndereco({
+            aviso: err.detalhe || err?.corpo?.message || 'Para emitir o boleto, falta o seu endereço.',
+            depois: simulacaoAntecipacao,
+          });
+        }
         avisar('Não foi possível gerar o boleto agora');
       }
     });
@@ -1791,6 +1803,15 @@ function formularioSegundaVia(id, boleto, erro) {
         // encontrada" logo depois de dar certo.
         abrirBoleto(r?.novoBillId || id, { individual: true });
       } catch (err) {
+        // Falta o endereço: em vez de mostrar o erro e deixar a pessoa parada,
+        // abre o formulário e volta para cá quando ela terminar. O boleto NÃO
+        // foi emitido — a parcela antiga continua de pé.
+        if (codigoDoErro(err) === 'endereco_incompleto') {
+          return telaEndereco({
+            aviso: err.detalhe || err?.corpo?.message || 'Para emitir o boleto, falta o seu endereço.',
+            depois: () => formularioSegundaVia(id, boleto),
+          });
+        }
         const mensagens = {
           nao_esta_vencida: 'Esta parcela não está vencida.',
           data_invalida: 'Não foi possível usar esta data.',
@@ -2041,6 +2062,149 @@ function formularioComprovante(id, boleto, erro, origem) {
   });
 }
 
+// ---------- endereço ---------------------------------------------------------
+// O banco não mostra boleto de quem não tem endereço no cadastro. Quem assinou
+// antes de o formulário de adesão pedir rua, número e CEP separados ficou só
+// com o texto que digitou ("Casa", "Av Rocha Pombo", um e-mail no lugar do
+// endereço) — e ninguém no escritório consegue adivinhar o que falta.
+//
+// Em vez de a equipe ligar para cada um, quem precisa emitir boleto informa
+// aqui. O CEP preenche rua, bairro, cidade e estado: sobra o número, que é a
+// única coisa que só a pessoa sabe.
+const mascaraCep = (v) => {
+  const d = v.replace(/\D/g, '').slice(0, 8);
+  return d.length > 5 ? `${d.slice(0, 5)}-${d.slice(5)}` : d;
+};
+
+/** O código que o servidor manda quando o endereço é o que está travando. */
+function codigoDoErro(err) {
+  return err?.codigo || err?.corpo?.codigo || null;
+}
+
+/**
+ * `depois` é para onde voltar quando o endereço ficar pronto — quem caiu aqui
+ * no meio de uma 2ª via quer terminar a 2ª via, não ficar numa tela de cadastro.
+ */
+async function telaEndereco({ aviso, depois, erro, valores } = {}) {
+  let e = valores;
+  if (!e) {
+    abrirFolha('<div class="vazio">Carregando…</div>');
+    try {
+      const p = await chamar('/perfil');
+      e = p.endereco || {};
+    } catch {
+      return abrirFolha('<div class="vazio">Não foi possível abrir seu endereço agora.</div>');
+    }
+  }
+
+  abrirFolha(`
+    <h2>Seu <em>endereço</em></h2>
+    <div class="sub">O banco pede o endereço do pagador para emitir o boleto. Ele não aparece
+    no documento para mais ninguém.</div>
+
+    ${aviso ? `<div class="faixa alerta" style="margin-bottom:16px"><div>${escapar(aviso)}</div></div>` : ''}
+
+    <form id="form-endereco" novalidate>
+      <div class="campo">
+        <label for="cep">CEP</label>
+        <input id="cep" inputmode="numeric" autocomplete="postal-code" placeholder="00000-000"
+               value="${escapar(e.cep || '')}" />
+        <div class="dica" id="dica-cep">Digite o CEP que a gente preenche o resto.</div>
+      </div>
+      <div class="campo">
+        <label for="rua">Rua</label>
+        <input id="rua" autocomplete="address-line1" value="${escapar(e.rua || '')}" />
+      </div>
+      <div class="campo">
+        <label for="numero">Número</label>
+        <input id="numero" autocomplete="address-line2" value="${escapar(e.numero || '')}" />
+        <div class="dica">Se o seu endereço não tem número, escreva <b>s/n</b>.</div>
+      </div>
+      <div class="campo">
+        <label for="complemento">Complemento <small>(opcional)</small></label>
+        <input id="complemento" placeholder="Apto, bloco, fundos" value="${escapar(e.complemento || '')}" />
+      </div>
+      <div class="campo">
+        <label for="bairro">Bairro</label>
+        <input id="bairro" value="${escapar(e.bairro || '')}" />
+      </div>
+      <div class="campo">
+        <label for="cidade">Cidade</label>
+        <input id="cidade" autocomplete="address-level2" value="${escapar(e.cidade || '')}" />
+      </div>
+      <div class="campo">
+        <label for="uf">Estado</label>
+        <input id="uf" maxlength="2" autocomplete="address-level1" placeholder="SC"
+               value="${escapar(e.uf || '')}" style="text-transform:uppercase" />
+      </div>
+      ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+      <div class="acoes dupla">
+        <button class="botao" type="submit">Salvar endereço</button>
+        <button class="botao secundario" type="button" data-fechar-folha>Agora não</button>
+      </div>
+    </form>
+  `, (el) => {
+    const campo = (id) => el.querySelector(`#${id}`);
+    const cep = campo('cep');
+    const dica = el.querySelector('#dica-cep');
+
+    cep.addEventListener('input', async () => {
+      cep.value = mascaraCep(cep.value);
+      const digitos = cep.value.replace(/\D/g, '');
+      if (digitos.length !== 8) return;
+      dica.textContent = 'Procurando…';
+      try {
+        // Consulta pública dos Correios (ViaCEP). Se estiver fora do ar, a
+        // pessoa digita tudo à mão — por isso nada aqui bloqueia o formulário.
+        const r = await fetch(`https://viacep.com.br/ws/${digitos}/json/`);
+        const d = await r.json();
+        if (d.erro) { dica.textContent = 'CEP não encontrado. Pode preencher à mão.'; return; }
+        if (d.logradouro) campo('rua').value = d.logradouro;
+        if (d.bairro) campo('bairro').value = d.bairro;
+        if (d.localidade) campo('cidade').value = d.localidade;
+        if (d.uf) campo('uf').value = d.uf;
+        dica.textContent = 'Confira e diga o número.';
+        campo('numero').focus();
+      } catch {
+        dica.textContent = 'Não conseguimos buscar agora. Pode preencher à mão.';
+      }
+    });
+
+    el.querySelector('#form-endereco').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const botao = el.querySelector('button[type=submit]');
+      const digitados = {
+        cep: campo('cep').value,
+        rua: campo('rua').value.trim(),
+        numero: campo('numero').value.trim(),
+        complemento: campo('complemento').value.trim(),
+        bairro: campo('bairro').value.trim(),
+        cidade: campo('cidade').value.trim(),
+        uf: campo('uf').value.trim().toUpperCase(),
+      };
+      botao.disabled = true; botao.textContent = 'Salvando…';
+      try {
+        await chamar('/perfil/endereco', { method: 'PATCH', body: JSON.stringify(digitados) });
+        avisar('Endereço salvo');
+        // Volta para o que a pessoa estava tentando fazer. Sem isto ela
+        // precisaria achar de novo a parcela e recomeçar.
+        if (depois) return depois();
+        telaMeusDados();
+      } catch (err) {
+        botao.disabled = false; botao.textContent = 'Salvar endereço';
+        // Mantém o que ela digitou: refazer o formulário inteiro por causa de
+        // um campo é o tipo de coisa que faz desistir.
+        telaEndereco({
+          aviso,
+          depois,
+          valores: digitados,
+          erro: err.detalhe || err?.corpo?.message || 'Não foi possível salvar agora. Tente de novo.',
+        });
+      }
+    });
+  });
+}
+
 // ---------- meus dados -------------------------------------------------------
 // O formando confere o contato e pede correção. O valor só muda de verdade
 // depois que a equipe confere — é por aqui que a gente conserta boleto que não
@@ -2077,6 +2241,23 @@ async function telaMeusDados(erro) {
           <br>Enviado em ${dataCurta(pendente.pedidoEm.slice(0, 10))} — até a equipe confirmar, valem os contatos atuais.
         </div>
       </div>` : ''}
+
+    <div class="secao-titulo">Endereço</div>
+    ${p.endereco?.completo
+      ? `<div class="dado"><span>Onde você mora</span><b>${escapar([
+          [p.endereco.rua, p.endereco.numero].filter(Boolean).join(', '),
+          p.endereco.complemento,
+          p.endereco.bairro,
+          [p.endereco.cidade, p.endereco.uf].filter(Boolean).join('/'),
+          p.endereco.cep,
+        ].filter(Boolean).join(' · '))}</b></div>
+         <p class="rodape-nota" style="margin:8px 0 12px">Mudou de casa?
+         <button class="link-inline" id="editar-endereco">Atualizar endereço</button>.</p>`
+      : `<div class="faixa alerta" style="margin-bottom:12px">
+           <div><b>Falta o seu endereço.</b> O banco pede o endereço do pagador para emitir
+           boleto, então sem ele a 2ª via não sai.
+           <button class="link-inline" id="editar-endereco">Informar agora</button>.</div>
+         </div>`}
 
     <div class="secao-titulo">Contato</div>
     <form id="form-contato" novalidate>
@@ -2117,6 +2298,7 @@ async function telaMeusDados(erro) {
         telaMeusDados();
       } catch { avisar('Não foi possível registrar agora'); }
     }));
+    el.querySelector('#editar-endereco')?.addEventListener('click', () => telaEndereco());
     const tel = el.querySelector('#telefone');
     tel.addEventListener('input', () => { tel.value = mascaraTelefone(tel.value); });
 

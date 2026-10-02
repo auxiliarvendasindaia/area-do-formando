@@ -24,6 +24,29 @@
   const lembretes = new Map();         // adesaoId -> dias de antecedência
   const presencas = new Map();         // adesaoId -> { [chaveEtapa]: 'sim' | 'nao' }
   const lidas = new Map();             // adesaoId -> Set de avisos já vistos
+  const enderecos = new Map();         // adesaoId -> endereço que o formando informou
+
+  /** O endereço como o perfil devolve — vazio é o estado inicial, de propósito. */
+  function enderecoDoPerfil(adesaoId) {
+    const e = enderecos.get(adesaoId);
+    const falta = [];
+    if (!e?.cep) falta.push('CEP');
+    if (!e?.rua) falta.push('rua');
+    if (!e?.numero) falta.push('número');
+    if (!e?.cidade) falta.push('cidade');
+    if (!e?.uf) falta.push('estado');
+    return {
+      rua: e?.rua || '',
+      numero: e?.numero || '',
+      complemento: e?.complemento || '',
+      bairro: e?.bairro || '',
+      cidade: e?.cidade || '',
+      uf: e?.uf || '',
+      cep: e?.cep ? `${e.cep.slice(0, 5)}-${e.cep.slice(5)}` : null,
+      completo: falta.length === 0,
+      falta,
+    };
+  }
 
   function registrarHistorico(billId, oQue, detalhe) {
     const lista = historicos.get(billId) || [];
@@ -559,7 +582,31 @@
         turma: turma.rotulo,
         pendente: contatoPendente.get(a2.adesaoId) || null,
         lembreteDias: lembretes.get(a2.adesaoId) ?? null,
+        endereco: enderecoDoPerfil(a2.adesaoId),
       };
+    },
+
+    // Endereço: a operadora não mostra o boleto de quem não tem endereço no
+    // cadastro. Na demonstração ele começa VAZIO de propósito — é o estado dos
+    // formandos que assinaram antes de o link exigir os campos separados, e é
+    // esse caminho que a gente quer poder mostrar.
+    'PATCH /perfil/endereco': (t, corpo) => {
+      const a = daSessao(t);
+      const cep = soDigitos(corpo.cep);
+      if (cep.length !== 8) throw erro(400, { erro: 'cep_invalido', message: 'O CEP precisa ter 8 números.' });
+      const uf = String(corpo.uf || '').trim().toUpperCase();
+      if (uf.length !== 2) throw erro(400, { erro: 'uf_invalida', message: 'O estado precisa ter 2 letras (ex.: SC).' });
+      const rua = String(corpo.endereco || corpo.rua || '').trim();
+      const numero = String(corpo.numero || '').trim();
+      const cidade = String(corpo.cidade || '').trim();
+      if (!rua) throw erro(400, { erro: 'rua', message: 'Diga o nome da rua.' });
+      if (!numero) throw erro(400, { erro: 'numero', message: 'Diga o número. Se não tiver, escreva "s/n".' });
+      if (!cidade) throw erro(400, { erro: 'cidade', message: 'Diga a cidade.' });
+      enderecos.set(a.adesaoId, {
+        rua, numero, complemento: String(corpo.complemento || '').trim(),
+        bairro: String(corpo.bairro || '').trim(), cidade, uf, cep,
+      });
+      return { endereco: enderecoDoPerfil(a.adesaoId), vindi: { atualizado: true, erro: null } };
     },
 
     // lembrete de vencimento: quantos dias antes avisar (null desliga)
@@ -796,6 +843,18 @@
       const a = daSessao(token);
       const b = a.boletos.find((x) => x.id === mv[1]);
       if (!b) throw erro(404, { erro: 'nao_encontrado' });
+      // Mesma trava do CRM: sem endereço a operadora cria a cobrança e não
+      // mostra o boleto — e a antiga já foi cancelada no caminho. A tela
+      // reconhece o código e pede o endereço na hora.
+      const end = enderecoDoPerfil(a.adesaoId);
+      if (!end.completo) {
+        throw erro(409, {
+          erro: 'endereco_incompleto',
+          codigo: 'endereco_incompleto',
+          falta: end.falta,
+          message: `Para emitir o boleto, falta o seu endereço (${end.falta.join(', ')}). É rápido: informe e tente de novo.`,
+        });
+      }
       const problema = validarSegundaVia(b, corpo.novoVencimento);
       if (problema) throw problema;
       const novaData = new Date(`${corpo.novoVencimento}T12:00:00`);
