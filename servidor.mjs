@@ -1430,8 +1430,8 @@ async function api(req, res, url) {
     const valorAdesao = Number(adesao.contrato?.total || 0);
     const aberto = solicitacoes.find((s) => s.adesaoId === adesao.adesaoId && s.tipo === 'cancelamento' && s.status === 'aberta');
     return responder(res, 200, {
+      // Sem valor em reais (decisão de 05/10/2026): o portal mostra só o percentual.
       dataFesta, diasAteFesta: dias, escada: ESCADA_PENAL, faixa, valorAdesao,
-      multaEstimada: faixa.pct == null ? null : Math.round(valorAdesao * faixa.pct) / 100,
       pedidoAberto: aberto ? { protocolo: aberto.protocolo, criadoEm: aberto.criadoEm } : null,
       jaCancelada: false,
     });

@@ -1770,7 +1770,7 @@ async function telaCancelamentoAviso() {
     ? 'A data da festa ainda não está definida: a equipe confirma a multa com você.'
     : c.faixa.integral
       ? `Faltam ${c.diasAteFesta} dias para a festa (${dataCurta(c.dataFesta)}). Nessa antecedência, o valor da adesão é devido por inteiro.`
-      : `Faltam ${c.diasAteFesta} dias para a festa (${dataCurta(c.dataFesta)}). A multa prevista é de <b>${c.faixa.pct}% do valor total da adesão</b>, cerca de <b>${brl(c.multaEstimada)}</b>.`;
+      : `Faltam ${c.diasAteFesta} dias para a festa (${dataCurta(c.dataFesta)}). A multa prevista é de <b>${c.faixa.pct}% do valor total da adesão</b>.`;
 
   abrirFolha(`
     <h2>Antes de pedir o <em>cancelamento</em></h2>
