@@ -419,6 +419,9 @@
       };
     }
     // ── pedidos (viram demanda no CRM) ───────────────────────────────────────
+    // Multas do contrato e a faixa de hoje, antes do pedido de cancelamento.
+    if (caminho === '/cancelamento/condicoes') return pedir('GET', caminho, null, token);
+
     if (caminho === '/solicitacoes' && metodo === 'POST') {
       try {
         // O corpo do protótipo já é o que a API quer; o resto (motivo,
@@ -426,7 +429,9 @@
         return await pedir('POST', '/solicitacoes', corpo || {}, token);
       } catch (err) {
         // 409 é a contestação já aberta — a tela sabe falar disso.
-        if (err.status === 409) throw new Error('contestacao_ja_aberta');
+        // 409 da contestação tem tela própria; os outros (cancelamento já pedido)
+        // chegam com a frase do CRM em `detalhe`.
+        if (err.status === 409 && (corpo || {}).tipo === 'contestacao') throw new Error('contestacao_ja_aberta');
         throw err;
       }
     }

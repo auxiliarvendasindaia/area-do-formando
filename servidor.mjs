@@ -535,8 +535,20 @@ const TIPOS_SOLICITACAO = {
   presenca: 'Confirmação de presença',
   quitacao: 'Declaração de quitação',
   pagamento_duplicado: 'Pagamento em duplicidade',
+  cancelamento: 'Pedido de cancelamento da adesão',
   outro: 'Pedido para a equipe',
 };
+
+// Escada da cláusula 6.2 do Termo — a mesma que o CRM usa quando a turma não tem outra.
+const ESCADA_PENAL = { mais360: 10, de360a181: 15, de180a121: 20, de120a31: 25 };
+function faixaPenal(dias) {
+  if (dias == null) return { rotulo: 'Turma sem data de festa', pct: null, integral: false };
+  if (dias > 360) return { rotulo: 'Mais de 360 dias antes da festa', pct: ESCADA_PENAL.mais360, integral: false };
+  if (dias > 180) return { rotulo: 'De 360 a 181 dias antes da festa', pct: ESCADA_PENAL.de360a181, integral: false };
+  if (dias > 120) return { rotulo: 'De 180 a 121 dias antes da festa', pct: ESCADA_PENAL.de180a121, integral: false };
+  if (dias > 30) return { rotulo: 'De 120 a 31 dias antes da festa', pct: ESCADA_PENAL.de120a31, integral: false };
+  return { rotulo: '30 dias ou menos antes da festa', pct: 100, integral: true };
+}
 
 let sequencialProtocolo = 0;
 function novaSolicitacao(adesao, tipo, payload) {
@@ -1408,10 +1420,38 @@ async function api(req, res, url) {
     });
   }
 
+  // Multas do contrato e a faixa de hoje (o CRM responde o mesmo formato).
+  if (metodo === 'GET' && rota === '/cancelamento/condicoes') {
+    const adesao = exigirFormando(req, res); if (!adesao) return;
+    const turma = acharTurma(adesao.turmaId);
+    const dataFesta = turma?.dataEvento ? String(turma.dataEvento).slice(0, 10) : null;
+    const dias = dataFesta ? Math.round((new Date(`${dataFesta}T12:00:00`) - new Date(`${HOJE}T12:00:00`)) / 86400000) : null;
+    const faixa = faixaPenal(dias);
+    const valorAdesao = Number(adesao.contrato?.total || 0);
+    const aberto = solicitacoes.find((s) => s.adesaoId === adesao.adesaoId && s.tipo === 'cancelamento' && s.status === 'aberta');
+    return responder(res, 200, {
+      dataFesta, diasAteFesta: dias, escada: ESCADA_PENAL, faixa, valorAdesao,
+      multaEstimada: faixa.pct == null ? null : Math.round(valorAdesao * faixa.pct) / 100,
+      pedidoAberto: aberto ? { protocolo: aberto.protocolo, criadoEm: aberto.criadoEm } : null,
+      jaCancelada: false,
+    });
+  }
+
   if (metodo === 'POST' && rota === '/solicitacoes') {
     const adesao = exigirFormando(req, res); if (!adesao) return;
-    const { tipo, mensagem, quantidade, conviteTipo, billId, motivo } = await lerCorpo(req);
+    const corpoPedido = await lerCorpo(req);
+    const { tipo, mensagem, quantidade, conviteTipo, billId, motivo } = corpoPedido;
     if (!TIPOS_SOLICITACAO[tipo]) return responder(res, 400, { erro: 'tipo_invalido' });
+    if (tipo === 'cancelamento') {
+      const p = corpoPedido.payload || {};
+      if (!p.motivo || p.ciente !== true) return responder(res, 400, { erro: 'motivo_obrigatorio' });
+      if (solicitacoes.some((s) => s.adesaoId === adesao.adesaoId && s.tipo === 'cancelamento' && s.status === 'aberta')) {
+        return responder(res, 409, { erro: 'cancelamento_ja_pedido' });
+      }
+      const s = novaSolicitacao(adesao, tipo, { ...p, mensagem: [p.motivo, p.motivoDetalhe, p.observacoes].filter(Boolean).join(' — ') });
+      console.log(`  [${s.protocolo}] ${adesao.nome}: pedido de cancelamento (${p.motivo})`);
+      return responder(res, 201, s);
+    }
     if (tipo === 'contestacao' && billId && contestacaoAberta(adesao.adesaoId, billId)) {
       return responder(res, 409, { erro: 'contestacao_ja_aberta' });
     }

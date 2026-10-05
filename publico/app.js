@@ -406,6 +406,11 @@ const CLAUSULAS = {
   '4.2': 'O desconto tem natureza de desconto condicional, apurado parcela a parcela, e não constitui, sob nenhuma hipótese, multa, penalidade ou cláusula penal. A ausência do desconto decorre exclusivamente do não implemento da condição — o pagamento até o vencimento — e restringe-se à parcela paga em atraso.',
   '4.3': 'Não quitada a parcela até o vencimento, esta tornar-se-á exigível pelo seu valor pleno, sem o desconto, acrescida de correção monetária pelo IPCA e juros de mora de 1% (um por cento) ao mês, calculados pro rata die.',
   '4.4': 'Os instrumentos de cobrança informarão, para cada parcela, o valor com pontualidade e o respectivo valor pleno.',
+  // Cláusulas Sexta e Sétima do Termo de Adesão (adesao-contrato.template.ts), para a tela do pedido de cancelamento.
+  '6.1': 'A desistência dependerá de comunicação formal por escrito (e-mail ou WhatsApp) à CONTRATADA. O simples abandono do contrato, a ausência aos eventos, a interrupção dos pagamentos ou qualquer forma de silêncio não será considerada desistência válida, mantendo-se a vigência das obrigações contratuais assumidas.',
+  '6.2': 'Comunicada a desistência, incidirá cláusula penal, a título de pena convencional (art. 416, caput, do Código Civil), calculada sobre o valor total da adesão conforme a antecedência da comunicação em relação à festa de formatura.',
+  '6.5': 'Após o cálculo da pena, a CONTRATADA realizará o encontro de contas com os valores já pagos pelo CONTRATANTE: se houver pago mais do que o devido, a diferença lhe será restituída em até 30 (trinta) dias úteis da formalização da desistência; se houver pago menos, complementará a diferença em até 10 (dez) dias úteis da notificação.',
+  '7': 'O projeto de formatura compreende entregas escalonadas ao longo de todo o período contratado. Em caso de desistência, os valores correspondentes aos serviços já prestados serão devidos na proporção do serviço executado e não integram a base de restituição.',
   '8.1': 'O CONTRATANTE que estiver inadimplente com quaisquer parcelas do contrato terá seus direitos suspensos, ficando impedido de participar de eventos, ensaios e cerimônias (incluindo festa de meio de curso, foto-convite, pré-eventos e formatura), bem como de retirar convites ou benefícios, até a regularização total do débito.',
   '8.2': 'A inscrição do CONTRATANTE em cadastro de proteção ao crédito será precedida de notificação por escrito, com prazo de 15 (quinze) dias para regularização.',
   '8.3': 'A parte que der causa à cobrança extrajudicial de valores devidos por força deste contrato arcará com honorários de cobrança de 10% (dez por cento) sobre o valor exigido, obrigação que se aplica reciprocamente a ambas as partes.',
@@ -1703,6 +1708,149 @@ function formularioAjuda(motivo, erro) {
   });
 }
 
+// ---------- pedido de cancelamento -------------------------------------------
+// Decisão do dono (05/10/2026): o portal TEM o pedido, mas sem chamar atenção —
+// um link pequeno no fim de "Contrato e convites", fora do menu e fora da lista
+// do "Preciso de ajuda". Quanto mais o formando vê a opção, mais ele pensa nela.
+//
+// O caminho tem duas paradas de propósito:
+//   1. as multas do contrato, com a faixa em que ele está HOJE e a saída para
+//      negociar o pagamento — "li, estou ciente" é o que libera o passo seguinte;
+//   2. o motivo e as observações.
+// O pedido vira demanda no CRM. Ele NÃO cancela nada: é a comunicação por
+// escrito da cláusula 6.1, e a equipe formaliza o cancelamento num aditivo.
+
+// Os mesmos motivos do CRM (formatura-cancelamento.regras) — a equipe filtra por eles.
+const MOTIVOS_CANCELAMENTO = [
+  'Financeiro',
+  'Saiu do curso ou trocou de turma',
+  'Mudança de cidade',
+  'Insatisfação',
+  'Divergências com a turma',
+  'Outros',
+];
+
+async function telaCancelamentoAviso() {
+  abrirFolha('<div class="vazio">Carregando…</div>');
+  let c;
+  try { c = await chamar('/cancelamento/condicoes'); }
+  catch { return abrirFolha('<div class="vazio">Não foi possível abrir agora. Tente de novo em instantes.</div><div class="acoes"><button class="botao fantasma" data-fechar-folha>Fechar</button></div>'); }
+
+  if (c.pedidoAberto) {
+    return abrirFolha(`
+      <h2>Pedido em <em>análise</em></h2>
+      <div class="sub">Você já pediu o cancelamento em ${dataCurta(String(c.pedidoAberto.criadoEm).slice(0, 10))}. A equipe vai entrar em contato.</div>
+      <div class="dado"><span>Protocolo</span><b>${escapar(c.pedidoAberto.protocolo)}</b></div>
+      <div class="acoes"><button class="botao" data-fechar-folha>Entendi</button></div>`);
+  }
+
+  const e = c.escada;
+  const faixas = [
+    ['Mais de 360 dias antes da festa', `${e.mais360}%`, 'Mais de 360'],
+    ['De 360 a 181 dias antes', `${e.de360a181}%`, 'De 360 a 181'],
+    ['De 180 a 121 dias antes', `${e.de180a121}%`, 'De 180 a 121'],
+    ['De 120 a 31 dias antes', `${e.de120a31}%`, 'De 120 a 31'],
+    ['30 dias ou menos', 'valor integral', '30 dias ou menos'],
+  ];
+  const atual = (rotulo) => (c.faixa?.rotulo || '').startsWith(rotulo);
+  const hoje = c.faixa?.pct == null
+    ? 'A data da festa ainda não está definida: a equipe confirma a multa com você.'
+    : c.faixa.integral
+      ? `Faltam ${c.diasAteFesta} dias para a festa (${dataCurta(c.dataFesta)}). Nessa antecedência, o valor da adesão é devido por inteiro.`
+      : `Faltam ${c.diasAteFesta} dias para a festa (${dataCurta(c.dataFesta)}). A multa prevista é de <b>${c.faixa.pct}% do valor total da adesão</b>, cerca de <b>${brl(c.multaEstimada)}</b>.`;
+
+  abrirFolha(`
+    <h2>Antes de pedir o <em>cancelamento</em></h2>
+    <div class="sub">O cancelamento segue as regras do seu Termo de Adesão. Leia com atenção.</div>
+
+    <div class="secao-titulo">Multa por desistência ${clausula('6.2')}</div>
+    <div class="cartao">
+      ${faixas.map(([rot, val, chave]) => `
+        <div class="dado${atual(chave) ? ' destaque-faixa' : ''}"><span>${rot}</span><b>${val}</b></div>`).join('')}
+    </div>
+
+    <div class="faixa info" style="margin-top:14px"><div>${hoje}</div></div>
+
+    <div class="secao-titulo">Como funciona</div>
+    <ul class="lista-simples">
+      <li>Este pedido é a sua comunicação por escrito ${clausula('6.1')}. A data dele é a que conta para a multa.</li>
+      <li>Os boletos continuam valendo até o cancelamento ser formalizado num termo aditivo, que a equipe envia para você assinar.</li>
+    </ul>
+
+    <div class="faixa" style="margin-top:14px">
+      <div>O motivo é dificuldade para pagar? Dá para combinar uma forma de colocar em dia sem cancelar.
+      <button class="link-inline" id="cancel-negociar">Quero negociar o pagamento</button></div>
+    </div>
+
+    <div class="acoes dupla">
+      <button class="botao" data-fechar-folha>Voltar</button>
+      <button class="botao secundario" id="cancel-ciente">Li, estou ciente e quero dar continuidade na solicitação</button>
+    </div>
+  `, (el) => {
+    el.querySelector('#cancel-negociar').addEventListener('click', () =>
+      formularioAjuda(MOTIVOS_DE_AJUDA.find((m) => m.tipo === 'renegociacao')));
+    el.querySelector('#cancel-ciente').addEventListener('click', () => formularioCancelamento());
+  });
+}
+
+function formularioCancelamento(erro, preenchido = {}) {
+  abrirFolha(`
+    <h2>Pedido de <em>cancelamento</em></h2>
+    <div class="sub">Conte o motivo. A equipe recebe o pedido com um número de protocolo e entra em contato para
+    conferir os valores com você.</div>
+
+    <div class="campo">
+      <label for="cancel-motivo">Motivo</label>
+      <select id="cancel-motivo">
+        <option value="">Escolha…</option>
+        ${MOTIVOS_CANCELAMENTO.map((m) => `<option${preenchido.motivo === m ? ' selected' : ''}>${escapar(m)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="campo" id="cancel-outro" ${preenchido.motivo === 'Outros' ? '' : 'hidden'}>
+      <label for="cancel-detalhe">Qual é o motivo?</label>
+      <input id="cancel-detalhe" maxlength="300" value="${escapar(preenchido.motivoDetalhe || '')}" />
+    </div>
+    <div class="campo">
+      <label for="cancel-obs">Observações <small>(opcional)</small></label>
+      <textarea id="cancel-obs" rows="5" maxlength="2000" placeholder="Algo que a equipe precise saber">${escapar(preenchido.observacoes || '')}</textarea>
+    </div>
+    ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
+
+    <div class="acoes dupla">
+      <button class="botao" id="cancel-enviar">Enviar pedido de cancelamento</button>
+      <button class="botao secundario" id="cancel-voltar">Voltar</button>
+    </div>
+  `, (el) => {
+    const motivo = el.querySelector('#cancel-motivo');
+    motivo.addEventListener('change', () => { el.querySelector('#cancel-outro').hidden = motivo.value !== 'Outros'; });
+    el.querySelector('#cancel-voltar').addEventListener('click', telaCancelamentoAviso);
+    el.querySelector('#cancel-enviar').addEventListener('click', async (ev) => {
+      const dados = {
+        motivo: motivo.value,
+        motivoDetalhe: el.querySelector('#cancel-detalhe').value.trim(),
+        observacoes: el.querySelector('#cancel-obs').value.trim(),
+      };
+      if (!dados.motivo) return formularioCancelamento('Escolha o motivo.', dados);
+      if (dados.motivo === 'Outros' && !dados.motivoDetalhe) return formularioCancelamento('Conte qual é o motivo.', dados);
+      ev.target.disabled = true; ev.target.textContent = 'Enviando…';
+      try {
+        const r = await chamar('/solicitacoes', {
+          method: 'POST',
+          body: JSON.stringify({ tipo: 'cancelamento', payload: { ...dados, ciente: true } }),
+        });
+        folhaPedidoEnviado({
+          titulo: 'Pedido de cancelamento <em>registrado</em>',
+          sub: 'A equipe vai entrar em contato para conferir os valores e enviar o termo de cancelamento para você assinar.',
+          protocolo: r.protocolo,
+          nota: 'Até o cancelamento ser formalizado, os seus boletos continuam valendo.',
+        });
+      } catch (err) {
+        formularioCancelamento(err.detalhe || 'Não foi possível enviar agora. Tente de novo.', dados);
+      }
+    });
+  });
+}
+
 // ---------- meus pedidos -----------------------------------------------------
 // Todo pedido tem protocolo, data e prazo. É o que responde ao "abri e ninguém
 // me deu retorno".
@@ -2608,8 +2756,13 @@ function abaContrato() {
     })()}
 
     ${notaRodape()}
+
+    <div class="pe-discreto">
+      <button class="link-discreto" id="pedir-cancelamento">Solicitar cancelamento da adesão</button>
+    </div>
   `);
 
+  app.querySelector('#pedir-cancelamento')?.addEventListener('click', telaCancelamentoAviso);
   app.querySelectorAll('[data-doc]').forEach((b) => b.addEventListener('click', () => {
     if (b.dataset.doc !== 'termo') return avisar('No ambiente real, abre o PDF por link assinado de curta duração');
     if (estado.config?.demo) return avisar('No app de verdade, abre o termo assinado em PDF');

@@ -1019,3 +1019,15 @@ button, .item, summary { -webkit-tap-highlight-color: rgba(123, 78, 194, .15); }
   color: var(--accent-txt); text-decoration: underline; text-underline-offset: 2px;
 }
 .link-inline:hover { opacity: .8; }
+
+/* Pedido de cancelamento (05/10/2026): existe, mas não chama atenção — texto
+   pequeno e apagado no fim de "Contrato e convites", sem cor de link. */
+.pe-discreto { margin: 40px 2px 8px; text-align: center; }
+.link-discreto {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--texto-suave); opacity: .7;
+}
+.link-discreto:hover { text-decoration: underline; opacity: 1; }
+.destaque-faixa { font-weight: 600; background: var(--accent-fundo, rgba(123, 78, 194, .08)); border-radius: 6px; padding-left: 6px; padding-right: 6px; }
+.lista-simples { margin: 0 0 4px; padding-left: 18px; line-height: 1.6; font-size: 14px; }
+.lista-simples li { margin-bottom: 6px; }
