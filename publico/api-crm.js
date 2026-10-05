@@ -498,6 +498,10 @@
       return pedir('PATCH', '/perfil/endereco', corpo || {}, token);
     }
 
+    // Informe de pagamentos do ano: a lista de anos. O PDF de cada ano não passa
+    // por aqui — download vai direto, por `urlDoArquivo`.
+    if (caminho === '/informe-ir') return pedir('GET', '/informe-ir', null, token);
+
     // ── extrato ──────────────────────────────────────────────────────────────
     // O CRM não tem rota de extrato: ele é um recorte do que /financeiro já
     // devolve. Montar aqui evita uma rota que só existiria para reempacotar
@@ -573,10 +577,10 @@
     recibo: true,
     // Ligado pela resposta de /config, que diz se há número de atendimento.
     falarComEquipe: false,
-    // Informe de IR: falta a equipe definir QUAL CNPJ do grupo emite a
-    // cobrança da formatura. Informe de imposto com CNPJ errado é pior que
-    // informe nenhum.
-    informeIr: false,
+    // Informe de pagamentos do ano (05/10/2026). O CNPJ que faltava foi
+    // decidido: o da CONTRATADA, a mesma empresa do contrato de adesão. A soma
+    // é pelo regime de caixa, com o que a operadora confirmou.
+    informeIr: true,
     // O sino avisa fatura em aberto e resposta a pedido (decisão de 29/09).
     notificacoes: true,
     // Lembrete de vencimento: falta onde guardar a preferência e quem dispara.
