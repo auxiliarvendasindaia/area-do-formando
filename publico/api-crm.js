@@ -567,8 +567,10 @@
     // O endereço o formando informa sozinho, e ele sobe para a operadora na
     // hora — é o que destrava o boleto de quem assinou sem endereço completo.
     editarEndereco: true,
-    // O recibo em PDF não existe no CRM: o botão some em vez de baixar nada.
-    recibo: false,
+    // Recibo da parcela paga em PDF (05/10/2026): o CRM gera com a data que a
+    // operadora confirmou. Sai como comprovante, sem CNPJ, enquanto a equipe não
+    // define qual empresa do grupo emite a cobrança da formatura.
+    recibo: true,
     // Ligado pela resposta de /config, que diz se há número de atendimento.
     falarComEquipe: false,
     // Informe de IR: falta a equipe definir QUAL CNPJ do grupo emite a

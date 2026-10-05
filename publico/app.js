@@ -3,6 +3,19 @@
 // Trocar pela API real depois = mudar API_BASE e de onde vem o token.
 
 const API_BASE = '/area-formando';
+
+/**
+ * O endereço de um arquivo que vem da API (PDF, principalmente).
+ *
+ * Download não passa pelo adaptador do CRM: o navegador precisa ir direto, para
+ * receber o binário. Com `window.API_URL` apontando para o CRM, o caminho
+ * relativo `/area-formando/...` cairia no servidor do SITE — que não tem API
+ * nenhuma —, e todo PDF falharia em silêncio.
+ */
+function urlDoArquivo(caminho) {
+  const base = String(window.API_URL || '').replace(/\/+$/, '');
+  return base ? base + caminho : API_BASE + caminho;
+}
 const app = document.getElementById('app');
 const folha = document.getElementById('folha');
 const toast = document.getElementById('aviso-flutuante');
@@ -1315,7 +1328,7 @@ async function abrirBoleto(id, { individual = false } = {}) {
 // O PDF sai de /financeiro/:id/pdf, que exige o token — por isso vem por fetch e
 // não por link direto. O blob é aberto numa aba nova.
 async function baixarPdf(id) {
-  const resposta = await fetch(`${API_BASE}/financeiro/${id}/pdf`, {
+  const resposta = await fetch(urlDoArquivo(`/financeiro/${id}/pdf`), {
     headers: { authorization: `Bearer ${estado.token}` },
   });
   if (!resposta.ok) throw new Error('falha');
@@ -1476,7 +1489,7 @@ async function abrirExtratoPdf() {
   if (estado.config?.demo) return avisar('No app de verdade, este botão baixa o extrato em PDF');
   avisar('Gerando o PDF…');
   try {
-    const resposta = await fetch(`${API_BASE}/extrato/pdf`, { headers: { authorization: `Bearer ${estado.token}` } });
+    const resposta = await fetch(urlDoArquivo(`/extrato/pdf`), { headers: { authorization: `Bearer ${estado.token}` } });
     if (!resposta.ok) throw new Error('falha');
     const url = URL.createObjectURL(await resposta.blob());
     const a = document.createElement('a');
@@ -3029,7 +3042,7 @@ async function abrirInforme(ano) {
 async function baixarArquivo(caminho, nome) {
   avisar('Gerando o PDF…');
   try {
-    const resposta = await fetch(API_BASE + caminho, { headers: { authorization: `Bearer ${estado.token}` } });
+    const resposta = await fetch(urlDoArquivo(caminho), { headers: { authorization: `Bearer ${estado.token}` } });
     if (!resposta.ok) throw new Error('falha');
     const url = URL.createObjectURL(await resposta.blob());
     const a = document.createElement('a');
