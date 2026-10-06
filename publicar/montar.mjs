@@ -52,7 +52,29 @@ const relativo = (t) => t
   .replace(/src="\/fotos\//g, 'src="fotos/');
 
 const css = relativo(fs.readFileSync(path.join(RAIZ, 'publico', 'estilo.css'), 'utf8'));
-const api = fs.readFileSync(path.join(AQUI, 'api-demo.js'), 'utf8');
+/**
+ * De onde o site publicado lê os dados (06/10/2026).
+ *
+ * Vazio = DEMONSTRAÇÃO, com os dados de exemplo e o CPF 111.111.111-11.
+ * Preenchido = o portal fala com o CRM e cada formando vê a própria vida
+ * financeira.
+ *
+ * A escolha mora aqui, e não no `publico/index.html`, porque aquele arquivo é o
+ * mesmo que o `servidor.mjs` serve na máquina de quem desenvolve: com a URL
+ * lá, abrir o protótipo local passaria a mexer em produção — inclusive mandando
+ * código de acesso por WhatsApp a formando de verdade a cada teste. O local
+ * continua em demonstração; só o que vai ao ar aponta para o CRM.
+ */
+const API_DO_CRM = 'https://comercial-api.squareweb.app/api/area-formando';
+
+// Os DOIS vão embutidos, e `window.API_URL` decide qual vale: o adaptador do
+// CRM começa com `if (!window.API_URL) return`, então sem a URL ele não se
+// instala e a demonstração assume. Assim voltar para demonstração é apagar uma
+// linha, sem remontar nada.
+const api = [
+  fs.readFileSync(path.join(AQUI, 'api-demo.js'), 'utf8'),
+  fs.readFileSync(path.join(RAIZ, 'publico', 'api-crm.js'), 'utf8'),
+].join('\n');
 const appjs = relativo(fs.readFileSync(path.join(RAIZ, 'publico', 'app.js'), 'utf8'));
 
 // --- página ------------------------------------------------------------------
@@ -77,6 +99,7 @@ ${css}
 <div id="aviso-flutuante" class="toast" hidden></div>
 <div class="pelicula" aria-hidden="true"></div>
 
+<script>window.API_URL = ${JSON.stringify(API_DO_CRM)};</script>
 <script>window.DADOS_DEMO = ${JSON.stringify(demo)};</script>
 <script>
 ${api}
