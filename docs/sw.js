@@ -9,7 +9,7 @@
 // Regra: dado do formando NUNCA entra em cache. Só a casca. Todo pedido a
 // /area-formando/ vai direto para a rede.
 
-const VERSAO = 'formando-v1';
+const VERSAO = 'formando-v2';
 const CASCA = ['./', './index.html', './estilo.css', './app.js', './logo-formaturas.png', './Daniel.ttf', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
@@ -26,7 +26,13 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  const daApi = url.pathname.includes('/area-formando/');
+  // `/api/area-formando/`, com o `/api/`: no GitHub Pages o SITE mora em
+  // `/area-formando/`, então a regra antiga marcava o próprio site como se
+  // fosse chamada de API — e nada era guardado. O portal se dizia instalável e
+  // abria em branco sem internet. A API, hoje, está em outro domínio e já seria
+  // excluída pela checagem de origem; o caminho fica como segunda barreira para
+  // o dia em que ela voltar a ser servida do mesmo endereço.
+  const daApi = url.pathname.includes('/api/area-formando/');
   if (e.request.method !== 'GET' || daApi || url.origin !== location.origin) return;
 
   // rede primeiro (o site muda a cada publicação); o cache é a rede de segurança
