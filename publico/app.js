@@ -232,10 +232,16 @@ function telaCodigo(envio, erro) {
           <div class="campo">
             <label for="codigo">6 dígitos</label>
             <input id="codigo" class="codigo" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" />
-            <div class="dica">Vale por 10 minutos.</div>
+            <!-- CINCO minutos, que é o que o servidor faz. Dizia dez, e quem
+                 confiava no texto digitava um código já expirado e via "código
+                 incorreto" — a mensagem acusa a pessoa de um erro que é nosso. -->
+            <div class="dica">Vale por 5 minutos.</div>
           </div>
           ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
           <button class="botao" type="submit">Entrar</button>
+          <!-- Sem este botão, quem deixou o código expirar só tinha "Usar outro
+               CPF": sair da tela, digitar o CPF de novo e torcer. -->
+          <button class="botao fantasma" type="button" id="reenviar">Enviar outro código</button>
           <button class="botao fantasma" type="button" id="voltar">Usar outro CPF</button>
         </form>
         ${envio.codigoDev ? `<div class="dev">Ambiente de teste — o código é <strong>${escapar(envio.codigoDev)}</strong>. Em produção ele só chega por WhatsApp e e-mail.</div>` : ''}
@@ -246,6 +252,27 @@ function telaCodigo(envio, erro) {
   campo.focus();
   campo.addEventListener('input', () => { campo.value = campo.value.replace(/\D/g, ''); });
   app.querySelector('#voltar').addEventListener('click', () => telaEntrar());
+
+  // Pedir outro código sem sair da tela. O servidor só aceita um por minuto, e
+  // a recusa volta como `aguarde` — que aqui vira uma frase, não um erro.
+  app.querySelector('#reenviar').addEventListener('click', async (e) => {
+    const botao = e.currentTarget;
+    botao.disabled = true; botao.textContent = 'Enviando…';
+    try {
+      const novo = await chamar('/auth/otp/solicitar', { method: 'POST', body: JSON.stringify({ cpf: estado.cpf }) });
+      // Volta para a tela limpa, com os destinos atualizados do envio novo.
+      telaCodigo(novo, null);
+      avisar('Código novo enviado');
+    } catch (err) {
+      botao.disabled = false; botao.textContent = 'Enviar outro código';
+      const mensagens = {
+        aguarde: 'Espere um minuto para pedir outro código.',
+        muitas_tentativas: 'Você pediu muitos códigos hoje. Fale com a equipe.',
+      };
+      telaCodigo(envio, mensagens[err.message] || 'Não foi possível enviar outro código agora.');
+    }
+  });
+
   app.querySelector('#form-codigo').addEventListener('submit', async (e) => {
     e.preventDefault();
     const botao = app.querySelector('button[type=submit]');
@@ -257,7 +284,10 @@ function telaCodigo(envio, erro) {
       await entrar();
     } catch (err) {
       const mensagens = {
-        codigo_invalido: 'Código incorreto ou expirado.',
+        // O servidor responde a mesma coisa para código errado e código
+        // vencido, de propósito. Como vencer é o caso mais comum, a frase diz o
+        // que fazer em vez de deixar a pessoa conferindo dígito por dígito.
+        codigo_invalido: 'Código incorreto ou vencido. Se passaram mais de 5 minutos, peça outro código.',
         muitas_tentativas: 'Muitas tentativas. Peça um código novo.',
       };
       telaCodigo(envio, mensagens[err.message] || 'Não foi possível entrar agora.');
