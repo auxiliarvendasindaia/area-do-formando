@@ -232,8 +232,18 @@
    * ser a parcela limpa: o boleto antigo ficou desatualizado, e pagar por ele
    * deixa a dívida de pé.
    */
+  /**
+   * Os encargos no formato que a tela conhece.
+   *
+   * Até a API nova subir, o CRM responde com os campos da regra antiga. Sem
+   * esta tradução a composição do atraso mostraria a parcela como R$ 0,00.
+   */
+  const comoOsEncargosSaoHoje = (e) => (e ? { ...e, valorParcela: e.valorParcela ?? e.valorComPontualidade ?? 0 } : e);
+
   const doBoleto = (b) => ({
     ...b,
+    encargosHoje: comoOsEncargosSaoHoje(b.encargosHoje),
+    encargos: comoOsEncargosSaoHoje(b.encargos),
     valorDevido: Math.round(((b.totalBoleto || 0) - (b.taxaBoleto || 0)) * 100) / 100,
     // `url` é a fatura na operadora: é POR ELA que o formando paga (código de
     // barras e PDF — a casa não trabalha com Pix). Sem este mapeamento a tela
@@ -368,7 +378,7 @@
       // A tela lê a composição direto (valorParcela, juros, total); no CRM ela
       // vem dentro de `encargos`, junto do total já com a taxa.
       const r = await pedir('POST', `/financeiro/${simular2via[1]}/segunda-via/simular`, corpo || {}, token);
-      return r.encargos || {};
+      return comoOsEncargosSaoHoje(r.encargos) || {};
     }
 
     const emitir2via = caminho.match(/^\/financeiro\/([\w-]+)\/segunda-via$/);
