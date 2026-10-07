@@ -37,58 +37,56 @@ O que ficou para depois, com o motivo. Atualizado em 25/09/2026.
 
 ## Para sair do protótipo (fase 3 do plano)
 
-> Levantamento completo do que o CRM já tem pronto, o que falta construir e as decisões que travam
-> o começo: **[INTEGRACAO.md](INTEGRACAO.md)** (22/09/2026).
+> Levantamento completo do que o CRM tinha pronto quando isto começou:
+> **[INTEGRACAO.md](INTEGRACAO.md)** (22/09/2026).
 
-- Ler Vindi e CRM de verdade no lugar de `dados/exemplo.json`.
-- **2ª via — pronta (25/09).** `POST /api/area-formando/financeiro/:billId/segunda-via` cancela o
-  boleto vencido na Vindi e emite o novo, com o valor da cláusula 4.3 (parcela + juros de mora até o
-  dia escolhido) mais a taxa do contrato; `/simular` faz a mesma conta sem escrever nada, para prévia e
-  boleto nunca discordarem. Vencimento em até 5 dias, nunca no passado.
-  **Cancela antes de criar**, de propósito: na ordem inversa, uma falha deixaria dois boletos válidos
-  da mesma parcela e alguém pagaria os dois.
-  Falta exercitar com um formando de verdade — isso escreve cobrança em PRODUÇÃO, então é a equipe
-  que escolhe a hora e a parcela.
-- Boleto único na Vindi: gerar a cobrança com as parcelas escolhidas (vencimento em 3 dias) sem
-  mexer nos boletos das parcelas. Compensado o pagamento, baixar as parcelas e cancelar os boletos
-  delas; vencido sem pagamento, cancelar só o boleto único.
-- Ligar o aviso de pagamento da Vindi às funções `compensarUnico` e `compensarParcela` do
-  `servidor.mjs`. Se a mesma parcela for paga duas vezes (pelo boleto dela e pelo boleto único),
-  elas já abrem sozinhas um chamado "Pagamento em duplicidade" para a equipe resolver — falta esse
-  chamado virar tarefa no CRM.
-- **Comprovantes — metade pronta (25/09).** O lado do formando está construído: `POST
-  /api/area-formando/financeiro/:billId/comprovante` sobe o arquivo no bucket privado
-  `comprovantes-pagamento` (o mesmo das faturas de evento), `GET /comprovantes` lista com link
-  assinado de 1 hora, e a parcela vencida com anexo esperando conferência passa a **em análise**.
-  A tela da equipe também está pronta: **Área do Formando → Comprovantes** no CRM, com busca por
-  nome ou CPF e o arquivo abrindo por link assinado de 1 hora.
-  **Não há aprovação** (decisão de 25/09): o colaborador só consulta. A tela existe para quando o
-  formando liga dizendo "já paguei esse boleto" — quem atende abre o comprovante em vez de pedir de
-  novo, e só pede quando não houver nenhum. Comprovante é prova arquivada, não etapa de fluxo: quem
-  resolve a parcela continua sendo a **baixa**, da Vindi ou do financeiro.
-  Falta só **aplicar a migration 944** — o banco é produção, então é decisão da equipe. Sem ela nada
-  quebra: a leitura degrada para "nenhum comprovante", a lista aparece vazia e só o envio falha.
-- **Pedidos do formando — pronto (25/09).** O que ele pede no portal (contestação, negociação,
-  antecipação, convite extra, quitação, duplicidade) vira **demanda** em `formatura_solicitacoes`
-  (migration 945) e aparece em **Área do Formando → Solicitações** no CRM: fila do dia, protocolo,
-  busca por nome/CPF/protocolo, assumir, concluir e recusar (recusa exige motivo, que o formando lê
-  no portal). Mesmo molde e mesmos nomes de status da fila do app do casal (`area_cliente_solicitacoes`,
-  mig 478), para a equipe não aprender dois vocabulários.
-  A fila **não cobra, não dá baixa e não renegocia**: o operador resolve pelo fluxo normal do CRM e
-  volta para encerrar. Falta aplicar a **migration 945** (banco é produção).
-- **Taxa administrativa: a cobrança precisa ler o contrato.** Decisão de 22/09: o boleto soma só a
-  taxa administrativa de gestão de conta do contrato da turma (R$ 2,90 na 7506); a taxa bancária é
-  custo da empresa. No portal já funciona assim. No CRM falta: emissão lendo o plano (nos três
-  caminhos que criam boleto), campo da taxa **obrigatório** no cadastro da turma aceitando 0,00, e
-  preencher as 11 turmas sem valor. Boleto já criado não é refeito. Detalhes em
-  [INTEGRACAO.md](INTEGRACAO.md), item 3.2.
-- **Domínio do portal.** O site vai deixar de ser `auxiliarvendasindaia.github.io/area-do-formando`
-  e passar a `areaformando.eventosindaia.com.br`. A ordem importa: primeiro o registro **CNAME**
-  `areaformando` → `auxiliarvendasindaia.github.io` no DNS, e **só depois** o arquivo `CNAME` no
-  repositório `site-github`. Invertendo, o GitHub Pages para de servir no endereço antigo antes de
-  o novo resolver, e o portal fica fora do ar no intervalo. Por isso o arquivo ainda não foi criado.
+**Conferido item por item em 07/10/2026, contra o código da `dev` e o banco de produção.** O que
+estava listado aqui como pendente já tinha sido construído — esta seção dizia que faltava emissão
+lendo o contrato, webhook do boleto único e as migrations 944 e 945, e nada disso faltava mais.
 
-- **Contestação — o bloqueio agora é do banco.** Um índice UNIQUE parcial (mig 945) garante uma
-  contestação aberta por parcela; **encerrar a solicitação no CRM é o que libera abrir outra**. A
-  cobrança aparece como contestada no portal; marcar isso também na tela da turma, para quem olha a
-  cobrança e não a fila, ficou para depois.
+### Construído e no banco
+
+- **API do portal** (`/api/area-formando/*`) lendo o CRM e a Vindi de verdade. Acabaram os dados de
+  exemplo.
+- **2ª via** — cancela o boleto vencido na Vindi e emite o novo, com parcela + juros de mora até o
+  dia escolhido mais a taxa do contrato. `/simular` faz a mesma conta sem escrever, para prévia e
+  boleto nunca discordarem. **Cancela antes de criar**, de propósito: na ordem inversa, uma falha
+  deixaria dois boletos válidos da mesma parcela.
+- **Boleto único** — junta as parcelas escolhidas (vencimento em 3 dias) sem mexer nos boletos
+  delas, cobra a taxa uma vez só e prende as parcelas na cobrança.
+- **Baixa na hora.** O webhook da Vindi, ao receber o único como pago, compensa as parcelas e
+  cancela os boletos delas no mesmo instante; o job das 03:40 é a rede de proteção. Sem isso os
+  dois ficariam pagáveis por um dia inteiro.
+- **Comprovantes** — bucket privado `comprovantes-pagamento`, tabela `formatura_bill_comprovantes`,
+  link assinado de 1 hora, e a vencida com anexo passa a *em análise*. Sem aprovação, de propósito:
+  comprovante é prova arquivada, não etapa de fluxo — quem resolve a parcela é a baixa.
+- **Pedidos do formando** — viram demanda em `formatura_solicitacoes` e aparecem em *Área do
+  Formando → Solicitações* no CRM. Inclui "Pagamento em duplicidade", para o caso de a mesma
+  parcela ser paga pelo boleto dela e pelo único.
+- **Contestação** — um índice UNIQUE parcial garante uma contestação aberta por parcela; encerrar a
+  solicitação no CRM é o que libera abrir outra.
+- **Taxa administrativa do contrato** — a emissão lê o plano da turma. Os 22 planos estão com
+  R$ 2,90; nenhum sem valor.
+- **Parcela de valor fixo** (06/10) — sem desconto de pontualidade; o atraso cobra juros de mora de
+  1% ao mês, pro rata die. A Cláusula Quarta do termo acompanha.
+- **Domínio próprio** — `areaformando.eventosindaia.com.br`, com HTTPS. O repositório do site mudou
+  para a organização `git-rbc` em 07/10; o endereço `auxiliarvendasindaia.github.io/area-do-formando`
+  deixou de existir.
+- **Modo simulação** para turma de teste (`ORC-TESTE-*`): linha digitável, 2ª via e boleto único
+  nascendo no espelho local, sem tocar na Vindi. É o que permite avaliar o portal sem cobrança
+  nascendo no nome de quem testa.
+
+### O que falta de verdade
+
+1. **Deploy em produção.** Tudo acima está na `dev`; o que roda em produção ainda é o código
+   anterior. Os PRs `dev`→`master` (back #805, front #801) estão abertos, com 34 commits de seis
+   pessoas, esperando o time. **É o único item que impede o resto.**
+2. **Exercitar com um formando de verdade** — login, 2ª via, comprovante e pedido. Isso escreve
+   cobrança na Vindi, então é a equipe que escolhe a hora e a parcela, com acompanhamento.
+3. **Piloto com uma turma** antes de abrir para os 230.
+4. **Ligar os freios**, quando a equipe decidir: `AREA_FORMANDO_LIBERADO` (nenhuma mensagem do CRM
+   manda o formando ao portal enquanto estiver desligado) e `FORMATURA_LEMBRETE_ATIVO`. Os dois
+   nascem desligados e só "true" liga. Hoje, em produção, o primeiro está `false`.
+5. **Endereço de 10 formandos** que assinaram antes de o link exigir os campos separados. Eles
+   resolvem sozinhos na primeira 2ª via — o portal pede e grava. Falta sincronizar o endereço da
+   Rosele na Vindi (o CRM tem, a operadora não), que está sem parcela em aberto.
