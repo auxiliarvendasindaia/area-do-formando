@@ -40,6 +40,8 @@
 
   /* papéis na interface */
   --fundo: var(--paper);
+  /* a moldura atrás da coluna central, mais funda que ela */
+  --fundo-moldura: #F6F3EE;
   --superficie: #FBF9F4;
   --superficie-2: var(--paper-2);
   --texto: var(--ink);
@@ -62,6 +64,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-tema="claro"]) {
     --fundo: #2A1B42;
+    --fundo-moldura: #1E1330;
     --superficie: #35244F;
     --superficie-2: #3E2B5B;
     --texto: #F3EDF8;
@@ -74,7 +77,7 @@
   }
 }
 :root[data-tema="escuro"] {
-  --fundo: #2A1B42; --superficie: #35244F; --superficie-2: #3E2B5B;
+  --fundo: #2A1B42; --fundo-moldura: #1E1330; --superficie: #35244F; --superficie-2: #3E2B5B;
   --texto: #F3EDF8; --texto-suave: #BCAFCE; --linha: rgba(242, 233, 216, .18);
   --positivo: #6FCFA8; --negativo: #E89B95; --dourado-txt: var(--gold-soft);
 }
@@ -600,10 +603,11 @@ main { padding: 26px 28px calc(48px + var(--base)); max-width: var(--coluna); ma
   background: var(--fundo); color: var(--texto);
   box-shadow: 0 0 60px rgba(12, 7, 21, .3);
 }
+
 main { max-width: none; margin: 0; }
 
-/* as faixas dos lados ficam claras sempre; o tema só muda a película */
-.conteudo { background: #F6F3EE; }
+/* a moldura atrás da coluna: clara no tema claro, funda no escuro */
+.conteudo { background: var(--fundo-moldura); }
 
 /* película: escurece a tela inteira de leve, sem mexer nas cores */
 .pelicula {
