@@ -427,6 +427,8 @@
         cronograma: t.cronograma || [],
         convites: t.convites || [],
         comissao: t.comissao || [],
+        // Quem está na turma (07/10). A API manda só o nome de cada um.
+        colegas: t.colegas || [],
         // A lista de cursos só existe quando a turma junta mais de um; repetir
         // aqui o rótulo (que JÁ é o curso) punha "Turma" e "Curso" com o mesmo
         // texto, um embaixo do outro.

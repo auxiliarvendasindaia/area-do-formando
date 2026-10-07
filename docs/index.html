@@ -877,6 +877,9 @@ main { max-width: none; margin: 0; }
   font-family: var(--serif); font-size: 19px; font-weight: 600;
 }
 .pessoa strong { display: block; font-size: 14.5px; font-weight: 600; line-height: 1.25; }
+/* quem está olhando se acha na lista de trinta sem precisar procurar */
+.pessoa.eu { border-color: var(--violet); background: color-mix(in srgb, var(--violet) 6%, var(--superficie)); }
+.pessoa.eu .inicial { background: var(--violet); color: #fff; }
 .pessoa span { font-size: 12.5px; color: var(--texto-suave); }
 
 .convite-linha { padding: 12px 0; border-bottom: 1px solid var(--linha); }
@@ -1754,10 +1757,18 @@ button, .item, summary { -webkit-tap-highlight-color: rgba(123, 78, 194, .15); }
       const a = daSessao(t);
       const turma = acharTurma(a.turmaId);
       const minhas = presencas.get(a.adesaoId) || {};
+      // Quem está na turma: só o nome, como a API do CRM manda (07/10). A
+      // contagem sai da lista para os dois nunca discordarem.
+      const colegas = adesoes
+        .filter((x) => x.turmaId === turma.id && x.situacao !== 'cancelada')
+        .map((x) => ({ nome: String(x.nome ?? '').trim(), souEu: x.adesaoId === a.adesaoId }))
+        .filter((c) => c.nome)
+        .sort((x, y) => x.nome.localeCompare(y.nome, 'pt-BR'));
       return {
         codigo: turma.codigo, rotulo: turma.rotulo, curso: turma.curso, cursos: turma.cursos,
         dataEvento: turma.dataEvento, cidade: turma.cidade, espaco: turma.espaco,
-        pacote: turma.pacote, formandos: turma.formandos, consultora: turma.consultora,
+        pacote: turma.pacote, formandos: colegas.length, consultora: turma.consultora,
+        colegas,
         comissao: turma.comissao || [],
         fotos: turma.fotos,
         cronograma: turma.cronograma.map((e) => ({ ...e, chave: chaveEtapa(e), presenca: minhas[chaveEtapa(e)] || null })),
@@ -2436,6 +2447,8 @@ button, .item, summary { -webkit-tap-highlight-color: rgba(123, 78, 194, .15); }
         cronograma: t.cronograma || [],
         convites: t.convites || [],
         comissao: t.comissao || [],
+        // Quem está na turma (07/10). A API manda só o nome de cada um.
+        colegas: t.colegas || [],
         // A lista de cursos só existe quando a turma junta mais de um; repetir
         // aqui o rótulo (que JÁ é o curso) punha "Turma" e "Curso" com o mesmo
         // texto, um embaixo do outro.
@@ -5491,6 +5504,21 @@ function abaTurma() {
       </div>
     </div>
 
+
+    ${t.colegas?.length ? `
+      <div class="secao-titulo">Quem está na turma</div>
+      <div class="pessoas colegas">
+        ${t.colegas.map((c) => `
+          <div class="pessoa${c.souEu ? ' eu' : ''}">
+            <span class="inicial">${escapar(semMarca(c.nome).trim()[0] || '?')}</span>
+            <div>
+              <strong>${escapar(semMarca(c.nome))}</strong>
+              ${c.souEu ? '<span>você</span>' : ''}
+            </div>
+          </div>`).join('')}
+      </div>
+      <p class="rodape-nota" style="margin-top:10px">Quem aparece aqui assinou a adesão desta turma.
+      Nada do financeiro de ninguém é mostrado — nem o seu para os outros.</p>` : ''}
     ${t.pacote ? `<div class="cartao">
       <div class="kicker traco">Pacote contratado</div>
       <p style="margin:6px 0 0">${escapar(t.pacote)}</p>

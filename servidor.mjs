@@ -741,10 +741,19 @@ const chaveEtapa = (e) => `${e.data}|${e.etapa}`;
 
 function projetarTurma(turma, adesaoId) {
   const minhas = presencas.get(adesaoId) || {};
+  // Quem está na turma: só o nome, como a API do CRM manda (07/10). A contagem
+  // sai da lista para os dois nunca discordarem.
+  const colegas = DADOS.adesoes
+    .filter((a) => a.turmaId === turma.id && a.situacao !== 'cancelada')
+    .map((a) => ({ nome: String(a.nome ?? '').trim(), souEu: a.adesaoId === adesaoId }))
+    .filter((c) => c.nome)
+    .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+
   return {
     codigo: turma.codigo, rotulo: turma.rotulo, curso: turma.curso, cursos: turma.cursos,
     dataEvento: turma.dataEvento, cidade: turma.cidade, espaco: turma.espaco,
-    pacote: turma.pacote, formandos: turma.formandos, consultora: turma.consultora,
+    pacote: turma.pacote, formandos: colegas.length, consultora: turma.consultora,
+    colegas,
     comissao: turma.comissao || [],
     fotos: turma.fotos,
     cronograma: turma.cronograma.map((e) => ({ ...e, chave: chaveEtapa(e), presenca: minhas[chaveEtapa(e)] || null })),

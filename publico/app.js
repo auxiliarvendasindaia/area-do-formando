@@ -2860,6 +2860,21 @@ function abaTurma() {
       </div>
     </div>
 
+
+    ${t.colegas?.length ? `
+      <div class="secao-titulo">Quem está na turma</div>
+      <div class="pessoas colegas">
+        ${t.colegas.map((c) => `
+          <div class="pessoa${c.souEu ? ' eu' : ''}">
+            <span class="inicial">${escapar(semMarca(c.nome).trim()[0] || '?')}</span>
+            <div>
+              <strong>${escapar(semMarca(c.nome))}</strong>
+              ${c.souEu ? '<span>você</span>' : ''}
+            </div>
+          </div>`).join('')}
+      </div>
+      <p class="rodape-nota" style="margin-top:10px">Quem aparece aqui assinou a adesão desta turma.
+      Nada do financeiro de ninguém é mostrado — nem o seu para os outros.</p>` : ''}
     ${t.pacote ? `<div class="cartao">
       <div class="kicker traco">Pacote contratado</div>
       <p style="margin:6px 0 0">${escapar(t.pacote)}</p>
