@@ -5855,24 +5855,75 @@ function folhaPedidoEnviado({ titulo, sub, protocolo, nota }) {
 }
 
 // ---------- orquestração -----------------------------------------------------
+/** O que cada aba precisa ter em mãos para poder ser desenhada. */
+const DADOS_DA_ABA = {
+  inicio: ['financeiro', 'turma'],
+  financeiro: ['financeiro'],
+  cronograma: ['turma'],
+  contrato: ['contrato'],
+  turma: ['turma'],
+};
+const DESENHAR = { inicio: () => abaInicio(), financeiro: () => abaFinanceiro(), cronograma: () => abaCronograma(), contrato: () => abaContrato(), turma: () => abaTurma() };
+
+/**
+ * O sino não muda por trocar de aba.
+ *
+ * Ele era refeito a cada clique, e montá-lo custa um `/financeiro` inteiro
+ * (1,2 s medido em 07/10). Agora é lido uma vez e revalidado no máximo a cada
+ * minuto — e sempre em segundo plano, sem segurar a tela. Depois de uma ação
+ * que mexe no estado (2ª via, pedido, comprovante), quem chama passa
+ * `{ agora: true }`.
+ */
+let avisosLidosEm = 0;
+async function atualizarAvisos({ agora = false } = {}) {
+  if (!agora && Date.now() - avisosLidosEm < 60000) return;
+  avisosLidosEm = Date.now();
+  try {
+    const novos = await chamar('/notificacoes');
+    const mudou = JSON.stringify(novos) !== JSON.stringify(estado.avisos);
+    estado.avisos = novos;
+    // só redesenha se o contador mudou de verdade: redesenhar à toa pisca a
+    // tela e perde a rolagem de quem está lendo
+    if (mudou && DESENHAR[estado.aba]) DESENHAR[estado.aba]();
+  } catch { avisosLidosEm = 0; }
+}
+
+/**
+ * Troca de aba.
+ *
+ * Desenha PRIMEIRO, com o que já está na memória, e busca o que falta depois —
+ * era isso que fazia a troca parecer travada: a tela só aparecia quando a
+ * última resposta chegava. Quem volta a uma aba já visitada não espera nada.
+ */
 async function irPara(aba) {
   estado.aba = aba;
+  const precisa = DADOS_DA_ABA[aba] || [];
+  const faltando = precisa.filter((k) => !estado[k]);
+
+  if (!faltando.length) DESENHAR[aba]();           // já tenho tudo: pinta agora
+  else abrirCarregando();                        // primeira visita: diz que está vindo
+
+  atualizarAvisos();                                // em segundo plano, nunca segura
+
+  if (!precisa.length) return;
   try {
-    // O contador do sino é lido junto: ele aparece no topo de todas as abas.
-    estado.avisos = await chamar('/notificacoes').catch(() => estado.avisos);
-    if (aba === 'inicio') {
-      [estado.financeiro, estado.turma] = await Promise.all([chamar('/financeiro'), chamar('/turma')]);
-      abaInicio();
-    }
-    if (aba === 'financeiro') { estado.financeiro = await chamar('/financeiro'); abaFinanceiro(); }
-    if (aba === 'cronograma') { estado.turma = await chamar('/turma'); abaCronograma(); }
-    if (aba === 'contrato') { estado.contrato = await chamar('/contrato'); abaContrato(); }
-    if (aba === 'turma') { estado.turma = await chamar('/turma'); abaTurma(); }
+    const frescos = await Promise.all(precisa.map((k) => chamar(`/${k}`)));
+    precisa.forEach((k, i) => { estado[k] = frescos[i]; });
+    if (estado.aba === aba) DESENHAR[aba]();        // a pessoa pode ter trocado de novo
   } catch (err) {
     if (err.status === 401) return sair();
     if (err.message === 'adesao_cancelada') return telaCancelada();
-    avisar('Não foi possível carregar agora');
+    if (faltando.length) return moldura('<div class="vazio">Não foi possível carregar agora.</div>', '');
+    avisar('Não foi possível atualizar agora');     // o que estava na tela continua valendo
   }
+}
+
+/**
+ * Enquanto a primeira carga não chega: a moldura da aba, sem conteúdo falso.
+ * O título vem de `estado.aba`, que já foi trocado — a pessoa vê onde está.
+ */
+function abrirCarregando() {
+  moldura('<div class="vazio">Carregando…</div>', '');
 }
 
 async function entrar() {
