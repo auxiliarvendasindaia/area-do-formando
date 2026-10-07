@@ -44,17 +44,17 @@ Levantado em 22/09/2026, com consulta ao banco de produção.
 
 | O quê | Onde fica | Unidade | Valor hoje |
 | --- | --- | --- | --- |
-| **Taxa de gestão de conta caixa**, por parcela | `formatura_plano.taxa_adm` (migration 591) | **reais** | R$ 2,90 em 9 dos 16 planos; um com 2,88 e um com 5,90; 5 sem taxa |
+| **Taxa de gestão de conta caixa**, por parcela | `formatura_plano.taxa_adm` (migration 591) | **reais** | R$ 2,90 em todos os planos (padronizado em 30/09/2026) |
 | **Taxa administrativa do pacote** (material comercial) | `pacotes_formatura.taxa_adm` (migration 439) | **percentual** | 2,90% nos três pacotes |
-| **Taxa bancária do boleto** | escrita no código, duas vezes | reais | R$ 8,90 |
+| **Taxa bancária do boleto** | custo da empresa, não repassado | reais | não cobrada do formando; o boleto soma só a taxa de R$ 2,90 por fatura |
 
 O rótulo do próprio CRM avisa da confusão: no cadastro do plano, o campo "Taxa adm. (R$)" tem a
 ajuda *"Taxa de gestão de conta caixa, cobrada por parcela. No orçamento da turma 7506 é R$ 2,90.
 **Não confundir com a taxa bancária do boleto**"*. O número 2,90 aparecer nos dois primeiros (uma
 vez em reais, outra em porcento) é coincidência infeliz e a origem provável da mistura.
 
-**Nenhum contrato assinado acordou taxa de boleto diferente de R$ 8,90.** Isto foi conferido de
-três formas, porque a primeira leitura dos números sugeria o contrário:
+**A taxa praticada é R$ 2,90 por fatura.** A auditoria de 30/09/2026 na Vindi mostrou que o sistema
+antigo já somava R$ 2,90 nas parcelas das turmas migradas. Sobre os contratos, conferido de três formas:
 
 1. **A cláusula da taxa é recente.** O item da taxa no Termo de Adesão nasceu no commit `9d161060`,
    de **25/08/2026**, e só sai preenchido quando o plano da turma já tem valor. Antes disso nenhum
@@ -66,23 +66,21 @@ três formas, porque a primeira leitura dos números sugeria o contrário:
 3. **A 7512 foi acordo comercial, não cláusula.** Os boletos foram refeitos em 17/09 com R$ 2,90 a
    pedido da consultora; os termos assinados daquela turma não trazem cláusula de taxa.
 
-Ou seja, os 653 boletos em que a Vindi cobrou R$ 8,90 numa turma cujo plano diz 2,90 **não
-contrariam contrato nenhum** — 449 são os cancelados da 7512 e 204 são os agendados da 7513, que
-seguem a taxa bancária padrão da casa.
+Em 30/09/2026 os boletos em aberto foram padronizados em R$ 2,90 por fatura: os da 7513, da
+ORC-2026-02221 e os demais que ainda estavam com outra taxa foram refeitos nos mesmos vencimentos
+(mensalidade + R$ 2,90).
 
-**A taxa não é uma só, e o sistema não arbitra.** Cada contrato acorda a sua: hoje há 2,90 em 9 dos
-16 planos, um com 2,88, um com 5,90 e 5 sem valor. O sistema cobra **o que estiver cadastrado, que
-tem de espelhar o contrato daquela turma** — não existe valor "certo" a impor nem correção
-automática. Quem cadastra a turma é quem confere no contrato.
+**Padrão de R$ 2,90 por fatura (30/09/2026).** É o praticado no mercado de formatura, e todas as
+turmas foram padronizadas nesse valor. O sistema cobra o que estiver cadastrado no plano da turma;
+turma nova já nasce com 2,90 e turma sem valor cobra 2,90.
 
 **Cuidado ao cadastrar:** o campo do plano é em **reais por parcela**, e o material comercial dos
 pacotes fala em **2,90%**. Os dois dizem "taxa administrativa de gestão de conta" e o número 2,90
 aparece nos dois — ao preencher, é o valor em reais do contrato que vale, nunca o percentual do
 pacote.
 
-**O que muda para quem ainda vai assinar:** **8 adesões** estão em turmas com o campo preenchido
-(7511: 4 · 7513: 2 · ORC-2026-02109: 2, esta com 5,90). O termo delas vai trazer a taxa da turma na
-cláusula 3.4, e o boleto vai cobrar exatamente esse valor.
+**O que muda para quem ainda vai assinar:** o termo traz na cláusula 3.4 a taxa da turma, R$ 2,90
+por fatura, e o boleto cobra exatamente esse valor.
 
 ### Decisão da equipe (22/09/2026)
 
@@ -97,7 +95,7 @@ exatamente essa taxa.
 **Já implementado no CRM em 22/09/2026** (ainda não commitado — ver o fim desta seção):
 
 - `formatura-adesoes/formatura-taxa-adm.ts` (novo): ponto único que lê `formatura_plano.taxa_adm`,
-  com `TAXA_BOLETO_LEGADA = 8,90` usada só por turma sem taxa cadastrada. Zero ≠ vazio.
+  com `TAXA_ADM_PADRAO = 2,90` por fatura para turma sem taxa cadastrada (30/09/2026).
 - `formatura-cobranca.service.ts`: o `amount` de cada bill passa a ser parcela + taxa do contrato;
   turma sem cadastro gera aviso no resultado da emissão.
 - `external/formando-fatura.ts` + `external-cobranca.service.ts`: o robô confere o valor aceitando a
@@ -157,19 +155,19 @@ as bills delas (`deleteBill`). Vencido sem pagamento: cancelar **só** o boleto 
 uma vez só. Precisa de uma tabela de ligação (boleto único → parcelas) — não existe nada parecido.
 
 ### 3.5 2ª via: a regra do portal é a decidida
-**Decisão da equipe (22/09/2026): a 2ª via do portal vence em 5 dias e sai com os encargos do
-atraso** — valor pleno (sem o desconto de pontualidade), corrigido pelo IPCA e com juros de mora de
-1% ao mês até o novo vencimento, como manda a cláusula 4.3. É o que o portal já faz.
+**Decisão da equipe (22/09/2026): a 2ª via do portal vence em 5 dias e sai com o encargo do
+atraso** — e desde 06/10/2026 esse encargo é só o juro de mora de 1% ao mês, pro rata die, sobre o
+valor da parcela (cláusula 4.3). O desconto de pontualidade e a correção pelo IPCA saíram: a parcela
+tem valor fixo, e a correção monetária do contrato é o reajuste programado dos 12 meses.
 
 O robô de cobrança segue outra regra: adia **até 7 dias** e **não mexe no valor**
 (`external-segunda-via.regras.ts`, "regra da casa"). Como `external-segunda-via.service.ts` é o
 serviço que o portal vai chamar, ele precisa aceitar as duas formas — por origem do pedido, não por
 "quem pediu primeiro". Sem isso, o mesmo formando recebe valores diferentes conforme peça no
-WhatsApp ou no portal, e a diferença é visível: numa parcela de R$ 193,75 com 30 dias de atraso, a
-do portal sai cerca de R$ 50 mais cara (o desconto de pontualidade de 20% cai).
-
-Decidir também se a régua passa a usar a regra nova — ou se a diferença é intencional, como
-tolerância de quem negocia pelo atendimento.
+WhatsApp ou no portal. A diferença, que era de cerca de R$ 50 numa parcela de R$ 193,75 com 30 dias
+de atraso (quando o desconto de 20% caía), virou **R$ 1,94** com a regra de 06/10 — só o juro de
+mora. Continua valendo decidir se a régua passa a cobrar o juro, mas a incoerência deixou de ser
+visível para o formando.
 
 ### 3.6 Comprovantes — e o que é "em análise" (decidido em 24/09/2026)
 
@@ -237,9 +235,8 @@ Chaves VAPID, guardar a assinatura do aparelho e o envio — reusando o serviço
 
 **Ainda em aberto:**
 
-1. **Preencher a taxa das 4 turmas que seguem sem valor**, conferindo o contrato de cada uma (0,00 é
-   resposta válida). Nenhuma tem formando esperando boleto, então não corre; enquanto ficarem em
-   branco, emitem com a taxa legada de R$ 8,90 (item 3.2).
+1. **Taxa das turmas:** resolvido em 30/09/2026 — todas as turmas estão com R$ 2,90 por fatura, e
+   turma nova já nasce com esse padrão (item 3.2).
 2. **Numeração das cláusulas:** o termo que o portal cita e o termo que o CRM gera são o mesmo
    documento? Disso depende poder citar a cláusula 3.4 ao lado da taxa na tela (item 3.2).
 

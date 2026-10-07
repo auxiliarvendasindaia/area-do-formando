@@ -445,10 +445,11 @@ const cursoDe = (nome) => CURSOS.find((c) => c.re.test(nome || '')) || CURSOS[CU
 // Texto igual ao do termo de adesão (adesao-contrato.template.ts). Toda citação
 // na tela vira um "?" que abre o trecho, para o formando conferir sem sair daqui.
 const CLAUSULAS = {
-  '4.1': 'Os valores das parcelas discriminados no ORÇAMENTO (ANEXO I) e no quadro de pagamento correspondem ao valor pleno da contraprestação. A título de incentivo à pontualidade, a CONTRATADA concede ao CONTRATANTE desconto de 20% sobre o valor de cada parcela que for integralmente quitada até a respectiva data de vencimento.',
-  '4.2': 'O desconto tem natureza de desconto condicional, apurado parcela a parcela, e não constitui, sob nenhuma hipótese, multa, penalidade ou cláusula penal. A ausência do desconto decorre exclusivamente do não implemento da condição — o pagamento até o vencimento — e restringe-se à parcela paga em atraso.',
-  '4.3': 'Não quitada a parcela até o vencimento, esta tornar-se-á exigível pelo seu valor pleno, sem o desconto, acrescida de correção monetária pelo IPCA e juros de mora de 1% (um por cento) ao mês, calculados pro rata die.',
-  '4.4': 'Os instrumentos de cobrança informarão, para cada parcela, o valor com pontualidade e o respectivo valor pleno.',
+  // 06/10/2026: a parcela passou a ter VALOR FIXO. As cláusulas 4.1, 4.2 e 4.4
+  // tratavam do desconto de pontualidade e saíram da tela — citar ao formando
+  // uma regra que a cobrança não cumpre é pior do que não citar nada. Fica a
+  // 4.3, na parte que vale.
+  '4.3': 'Não quitada a parcela até o vencimento, incidirão juros de mora de 1% (um por cento) ao mês, calculados pro rata die.',
   // Cláusulas Sexta e Sétima do Termo de Adesão (adesao-contrato.template.ts), para a tela do pedido de cancelamento.
   '6.1': 'A desistência dependerá de comunicação formal por escrito (e-mail ou WhatsApp) à CONTRATADA. O simples abandono do contrato, a ausência aos eventos, a interrupção dos pagamentos ou qualquer forma de silêncio não será considerada desistência válida, mantendo-se a vigência das obrigações contratuais assumidas.',
   '6.2': 'Comunicada a desistência, incidirá cláusula penal, a título de pena convencional (art. 416, caput, do Código Civil), calculada sobre o valor total da adesão conforme a antecedência da comunicação em relação à festa de formatura.',
@@ -639,10 +640,6 @@ function cartaoDestaque(b) {
 
 function itemBoleto(b) {
   const atraso = b.status === 'em_atraso';
-  // Cláusula 4.4: enquanto dá para pagar em dia, a linha mostra os dois valores —
-  // o com pontualidade e o pleno. Vencida já não tem desconto: mostra o que se
-  // deve hoje.
-  const mostrarPleno = ['em_aberto', 'agendado', 'nao_gerado'].includes(b.status) && !b.valorAtualizado && b.valorPleno > b.valor;
   const faixa = b.unico ? `${maiuscula(rotuloParcelas(b.unico.parcelas))} · ` : '';
   const quando = b.status === 'pago' ? `${faixa}${b.unico ? 'pago' : 'Pago'} em ${dataCurta(b.pagoEm)}`
     : b.status === 'em_analise' ? `Venceu em ${dataCurta(b.vencimento)} · comprovante em análise`
@@ -659,9 +656,8 @@ function itemBoleto(b) {
         ${b.qtdComprovantes ? '<span class="marca-status s-comprovante">Comprovante enviado</span>' : ''}
       </div>
       <div class="quanto">
-        ${mostrarPleno ? `<span class="pleno" title="valor pleno, sem o desconto de pontualidade">${brl(b.valorPleno + (b.taxaBoleto || 0))}</span>` : ''}
         <b>${brl(aPagar(b))}</b>
-        ${atraso && b.encargosHoje ? '<span class="economia">com encargos e taxa</span>'
+        ${atraso && b.encargosHoje ? '<span class="economia">com juros e taxa</span>'
           : b.taxaBoleto ? `<span class="economia">inclui ${brl(b.taxaBoleto)} de taxa</span>` : ''}
       </div>
       <div class="seta">›</div>
@@ -929,8 +925,8 @@ function abaFinanceiro() {
 // Decisão da equipe: o portal emite o boleto único na hora, sem aprovação caso a
 // caso. A conta vem do servidor (/financeiro/antecipar/simular) — é a mesma que
 // gera o boleto, então o valor da simulação é o valor do boleto. Parcela em dia
-// entra com o desconto de pontualidade (4.1); vencida, pelo pleno com os
-// encargos até o vencimento do boleto único (4.3).
+// entra pelo valor de face; vencida, com o juro de mora corrido até o
+// vencimento do boleto único.
 async function simulacaoAntecipacao() {
   const abertas = estado.financeiro.boletos
     .filter((b) => !b.unico && !b.unicoAtivo && ['em_aberto', 'em_atraso', 'agendado', 'nao_gerado'].includes(b.status))
@@ -959,10 +955,10 @@ async function simulacaoAntecipacao() {
   abrirFolha(`
     <h2>Antecipar ou <em>quitar</em></h2>
     <div class="sub">Escolha o que pagar e o boleto único sai na hora, com vencimento em ${sims[0].unico.diasParaVencer} dias.
-    Parcela em dia mantém o desconto de pontualidade ${clausula("4.1")}.</div>
+    A taxa de boleto é cobrada uma vez, e não em cada parcela.</div>
 
     ${vencidas.length ? `<div class="faixa alerta"><div>${vencidas.length === 1 ? 'A parcela vencida entra' : 'As parcelas vencidas entram'}
-      pelo valor pleno, corrigido pelo IPCA e com juros de mora de 1% ao mês até o vencimento do boleto único ${clausula("4.3")}.</div></div>` : ''}
+      com os juros de mora corridos até o vencimento do boleto único ${clausula("4.3")}.</div></div>` : ''}
 
     <div class="lista-antecipa">
       ${opcoes.map((o, i) => `
@@ -973,7 +969,7 @@ async function simulacaoAntecipacao() {
           </div>
           <div class="quanto">
             <b>${brl(sims[i].totalBoleto ?? sims[i].valor)}</b>
-            ${sims[i].unico.economia > 0 ? `<span class="economia">economia de ${brl(sims[i].unico.economia)}</span>` : ''}
+            ${sims[i].economiaTaxa > 0 ? `<span class="economia">${brl(sims[i].economiaTaxa)} menos de taxa</span>` : ''}
           </div>
         </button>`).join('')}
     </div>
@@ -991,7 +987,7 @@ function confirmarAntecipacao(opcao, sim) {
   const ps = sim.unico.parcelas;
   const linhaParcela = (p) => `
     <div class="dado">
-      <span>Parcela ${p.parcela}${p.vencida ? ' <small>(vencida · pleno + IPCA + juros)</small>' : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
+      <span>Parcela ${p.parcela}${p.vencida ? ' <small>(vencida · com juros)</small>' : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
       <b>${brl(p.valor)}</b>
     </div>`;
   // quitar o contrato tem dezenas de parcelas: as primeiras à vista, o resto recolhido
@@ -1011,7 +1007,6 @@ function confirmarAntecipacao(opcao, sim) {
       </details>` : ''}
 
     <div class="secao-titulo">Boleto único</div>
-    ${sim.unico.economia > 0 ? `<div class="dado"><span>Desconto de pontualidade mantido ${clausula("4.1")}</span><b class="verde">${brl(sim.unico.economia)}</b></div>` : ''}
     ${sim.taxaBoleto ? `<div class="dado"><span>Taxa administrativa <small>(uma só, em vez de ${ps.length})</small></span><b>+ ${brl(sim.taxaBoleto)}${sim.economiaTaxa > 0 ? ` <small class="verde">poupa ${brl(sim.economiaTaxa)}</small>` : ''}</b></div>` : ''}
     <div class="dado"><span>Vencimento</span><b>${dataCurta(sim.vencimento)}</b></div>
     <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(sim.totalBoleto ?? sim.valor)}</b></div>
@@ -1139,24 +1134,19 @@ function corpoDoAno(doAno) {
     <div class="lista">${resto.map(itemBoleto).join('')}</div>`;
 }
 
-// Onde o valor mudou por atraso, a tela explica a conta — e só aqui o IPCA
-// aparece pelo nome (decisão da equipe, 22/09/2026): no momento de pagar uma
+// Onde o valor mudou por atraso, a tela explica a conta: o valor da parcela,
+// o juro de mora que correu e o total. A conta aparece no momento de pagar uma
 // cobrança vencida ou com valor atualizado, não como aviso solto pelo site.
 function composicaoAtraso(e, rotuloTotal, taxa = 0) {
   return `
-    <div class="dado"><span>Valor pleno, sem o desconto ${clausula("4.1")}</span><b>${brl(e.valorPleno)}</b></div>
-    <div class="dado">
-      <span>Correção pelo IPCA <small>${e.ipcaMeses ? `(${e.ipcaMeses} ${e.ipcaMeses === 1 ? 'mês' : 'meses'} publicados pelo IBGE)` : '(nenhum mês fechado desde o vencimento)'}</small></span>
-      <b>${e.correcaoIpca ? `+ ${brl(e.correcaoIpca)}` : brl(0)}</b>
-    </div>
+    <div class="dado"><span>Valor da parcela</span><b>${brl(e.valorParcela)}</b></div>
     <div class="dado"><span>Juros de mora <small>(1% ao mês, ${e.diasAtraso} dia${e.diasAtraso === 1 ? '' : 's'})</small></span><b>+ ${brl(e.juros)}</b></div>
     ${taxa ? `<div class="dado"><span>${rotuloTotal}</span><b>${brl(e.total)}</b></div>
     <div class="dado"><span>Taxa administrativa de gestão de conta</span><b>+ ${brl(taxa)}</b></div>
     <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(arredondar(e.total + taxa))}</b></div>`
       : `<div class="dado"><span>${rotuloTotal}</span><b class="destaque-valor">${brl(e.total)}</b></div>`}
-    <p class="rodape-nota" style="margin-top:8px">Depois do vencimento a parcela deixa de ter o desconto
-    de pontualidade e passa a valer o pleno, corrigido pelo IPCA e com juros de mora de 1% ao mês
-    ${clausula("4.3")}.</p>`;
+    <p class="rodape-nota" style="margin-top:8px">O valor da parcela é fixo. Depois do vencimento
+    entram juros de mora de 1% ao mês, calculados por dia de atraso ${clausula("4.3")}.</p>`;
 }
 
 // \`individual\`: a pessoa já disse que quer pagar esta parcela sozinha, mesmo ela
@@ -1186,10 +1176,9 @@ async function abrirBoleto(id, { individual = false } = {}) {
       <div class="secao-titulo" style="margin-top:4px">Parcelas neste boleto</div>
       ${b.unico.parcelas.map((p) => `
         <div class="dado">
-          <span>Parcela ${p.parcela}${p.vencida ? ` <small>(vencida · pleno + IPCA + juros até ${dataCurta(b.vencimento)})</small>` : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
+          <span>Parcela ${p.parcela}${p.vencida ? ` <small>(vencida · com juros até ${dataCurta(b.vencimento)})</small>` : p.encargos ? ' <small>(valor da 2ª via)</small>' : ''}</span>
           <b>${brl(p.valor)}</b>
         </div>`).join('')}
-      ${b.unico.economia > 0 ? `<div class="dado"><span>Desconto de pontualidade mantido ${clausula("4.1")}</span><b class="verde">${brl(b.unico.economia)}</b></div>` : ''}
       ${b.taxaBoleto ? `<div class="dado"><span>Taxa administrativa <small>(uma só, em vez de ${b.unico.parcelas.length})</small></span><b>+ ${brl(b.taxaBoleto)}</b></div>` : ''}
       <div class="dado"><span>Total do boleto único</span><b class="destaque-valor">${brl(aPagar(b))}</b></div>
       ${b.status === 'em_aberto' ? `<p class="rodape-nota" style="margin-top:8px">As parcelas continuam com os boletos delas.
@@ -1200,17 +1189,16 @@ async function abrirBoleto(id, { individual = false } = {}) {
     valores = composicaoAtraso(b.encargos, 'Valor da 2ª via', b.taxaBoleto);
   } else if (b.encargosHoje) {
     // Vale também para "em análise": a parcela continua vencida e o valor
-    // continua sendo o da 4.3 — esconder a composição deixava o formando
+    // continua com o juro corrido — esconder a composição deixava o formando
     // olhando para R$ 319,57 numa parcela de R$ 250 sem explicação.
     valores = composicaoAtraso(b.encargosHoje, 'Valor hoje', b.taxaBoleto);
   } else if (b.status === 'pago') {
     valores = `<div class="dado"><span>Valor pago</span><b class="destaque-valor">${brl(b.valorPago || b.valor)}</b></div>`;
   } else {
     valores = `
-      <div class="dado"><span>Parcela, pagando até o vencimento</span><b>${brl(b.valor)}</b></div>
+      <div class="dado"><span>Valor da parcela</span><b>${brl(b.valor)}</b></div>
       ${b.taxaBoleto ? `<div class="dado"><span>Taxa administrativa de gestão de conta</span><b>+ ${brl(b.taxaBoleto)}</b></div>` : ''}
-      <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(aPagar(b))}</b></div>
-      ${b.valorPleno ? `<div class="dado"><span>Parcela pelo valor pleno, se pagar depois ${clausula("4.4")}</span><b>${brl(b.valorPleno)}</b></div>` : ''}`;
+      <div class="dado"><span>Total do boleto</span><b class="destaque-valor">${brl(aPagar(b))}</b></div>`;
   }
 
   // o que dá para fazer com ela
@@ -1242,9 +1230,9 @@ async function abrirBoleto(id, { individual = false } = {}) {
       ? `
       <div class="secao-titulo">Linha digitável</div>
       <div class="linha-digitavel" id="linha">${escapar(b.linhaDigitavel)}</div>
-      <div class="acoes dupla">
+      <div class="acoes ${window.API_RECURSOS?.pdfDoBoleto === false ? '' : 'dupla'}">
         <button class="botao" id="copiar">Copiar linha</button>
-        <button class="botao secundario" id="pdf">Abrir PDF</button>
+        ${window.API_RECURSOS?.pdfDoBoleto === false ? '' : '<button class="botao secundario" id="pdf">Abrir PDF</button>'}
       </div>
       <div class="acoes"><button class="botao secundario" id="compartilhar">Compartilhar</button></div>`
       // Só o link: é a fatura na operadora, com o código de barras e o PDF.
@@ -1944,9 +1932,7 @@ function formularioSegundaVia(id, boleto, erro) {
     <h2>2ª via da <em>${escapar(nomeCobranca(boleto).toLowerCase())}</em></h2>
     <div class="sub">Venceu em ${dataCurta(boleto.vencimento)} · ${atraso} dia${atraso === 1 ? '' : 's'} de atraso</div>
 
-    <div class="dado"><span>Com pontualidade, se tivesse pago em dia</span><b>${brl(boleto.valor)}</b></div>
-    <div class="dado"><span>Valor pleno ${clausula("4.1")}</span><b>${brl(boleto.valorPleno || boleto.valor)}</b></div>
-    <div class="dado"><span>Correção pelo IPCA <small id="p-meses"></small></span><b id="p-ipca">…</b></div>
+    <div class="dado"><span>Valor da parcela</span><b>${brl(boleto.valor)}</b></div>
     <div class="dado"><span>Juros de mora <small id="p-dias"></small></span><b id="p-juros">…</b></div>
     <div class="dado"><span>Novo vencimento</span><b>${dataCurta(novoVencimento)} <small>(em ${DIAS_SEGUNDA_VIA} dias)</small></b></div>
     <div class="dado"><span>Valor da 2ª via</span><b${boleto.taxaBoleto ? '' : ' class="destaque-valor"'} id="p-total">calculando…</b></div>
@@ -1954,8 +1940,8 @@ function formularioSegundaVia(id, boleto, erro) {
     <div class="dado"><span>Total do boleto</span><b class="destaque-valor" id="p-total-boleto">calculando…</b></div>` : ''}
 
     <div class="faixa info" style="margin-top:14px">
-      <div>Depois do vencimento a parcela passa a valer o pleno, corrigido pelo IPCA e com juros de
-      mora de 1% ao mês até o novo vencimento ${clausula("4.3")}.</div>
+      <div>O valor da parcela é fixo. Depois do vencimento entram juros de mora de 1% ao mês,
+      calculados por dia, até o novo vencimento ${clausula("4.3")}.</div>
     </div>
     ${erro ? `<p class="erro">${escapar(erro)}</p>` : ''}
 
@@ -1963,15 +1949,13 @@ function formularioSegundaVia(id, boleto, erro) {
       <button class="botao" id="gerar-2via" disabled>Gerar 2ª via</button>
       <button class="botao secundario" id="voltar-boleto">Voltar</button>
     </div>
-    <p class="rodape-nota">A correção usa os meses de IPCA já publicados pelo IBGE. Se você já pagou
+    <p class="rodape-nota">O juro corre por dia até o vencimento escolhido. Se você já pagou
     esta parcela, envie o comprovante em vez de gerar a 2ª via.</p>
   `, (el) => {
     const gerar = el.querySelector('#gerar-2via');
     chamar(`/financeiro/${id}/segunda-via/simular`, { method: 'POST', body: JSON.stringify({ novoVencimento }) })
       .then((e) => {
         if (!el.querySelector('#p-total')) return;   // a folha já mudou
-        el.querySelector('#p-ipca').textContent = `+ ${brl(e.correcaoIpca)}`;
-        el.querySelector('#p-meses').textContent = e.ipcaMeses ? `(${e.ipcaMeses} ${e.ipcaMeses === 1 ? 'mês' : 'meses'} publicados pelo IBGE)` : '(nenhum mês fechado desde o vencimento)';
         el.querySelector('#p-juros').textContent = `+ ${brl(e.juros)}`;
         el.querySelector('#p-dias').textContent = `(1% ao mês, ${e.diasAtraso} dias)`;
         el.querySelector('#p-total').textContent = brl(e.total);
@@ -2757,8 +2741,8 @@ function abaContrato() {
       <div class="dado"><span>Valor total</span><b>${brl(c.contratado.total)}</b></div>
       <div class="dado"><span>Parcelas</span><b>${c.contratado.parcelas}× de ${brl(c.contratado.mensalidade)}</b></div>
       <div class="dado"><span>Primeira parcela</span><b>${dataCurta(c.contratado.primeiraParcela)}</b></div>
-      <div class="dado"><span>Desconto por pagar até o vencimento ${clausula("4.1")}</span><b class="verde">20%</b></div>
       ${c.taxaBoleto ? `<div class="dado"><span>Taxa administrativa de gestão de conta <small>(em cada boleto)</small></span><b>${brl(c.taxaBoleto)}</b></div>` : ''}
+      <div class="dado"><span>Se a parcela atrasar ${clausula("4.3")}</span><b>juros de 1% ao mês</b></div>
     </div>
 
     <div class="secao-titulo">Seus convites</div>
@@ -2864,22 +2848,22 @@ function abaTurma() {
       <div class="cartao">
         <div class="kicker traco">Baile de gala</div>
         <h2 class="serif" style="margin:6px 0 2px;font-size:30px">${dataLonga(t.dataEvento)}</h2>
-        <p style="margin:0 0 16px;color:var(--texto-suave)">${escapar(t.espaco || t.cidade)} · ${escapar(t.cidade)}</p>
+        ${t.espaco || t.cidade ? `<p style="margin:0 0 16px;color:var(--texto-suave)">${escapar([t.espaco, t.cidade].filter(Boolean).join(' · '))}</p>` : ''}
         <div class="dado"><span>Faltam</span><b>${diasAte(t.dataEvento)} dias</b></div>
-        <div class="dado"><span>Recepção</span><b>${escapar((t.cronograma.find((e) => e.tipo === 'baile') || {}).hora || 'a definir')}</b></div>
+        ${(t.cronograma.find((e) => e.tipo === 'baile') || {}).hora ? `<div class="dado"><span>Recepção</span><b>${escapar(t.cronograma.find((e) => e.tipo === 'baile').hora)}</b></div>` : ''}
       </div>
       <div class="cartao">
         <div class="dado"><span>Turma</span><b>${escapar(t.rotulo)}</b></div>
-        <div class="dado"><span>Curso</span><b>${escapar(t.cursos.join(' · '))}</b></div>
+        ${t.cursos?.length ? `<div class="dado"><span>Curso</span><b>${escapar(t.cursos.join(' · '))}</b></div>` : ''}
         <div class="dado"><span>Formandos</span><b>${t.formandos}</b></div>
-        <div class="dado"><span>Consultora</span><b>${escapar(t.consultora)}</b></div>
+        ${t.consultora ? `<div class="dado"><span>Consultora</span><b>${escapar(t.consultora)}</b></div>` : ''}
       </div>
     </div>
 
-    <div class="cartao">
+    ${t.pacote ? `<div class="cartao">
       <div class="kicker traco">Pacote contratado</div>
       <p style="margin:6px 0 0">${escapar(t.pacote)}</p>
-    </div>
+    </div>` : ''}
 
     ${t.comissao?.length ? `
       <div class="secao-titulo">Comissão da turma</div>
@@ -2982,8 +2966,8 @@ const PERGUNTAS = [
   { p: 'Como eu pago a parcela?', r: 'Pelo boleto: abra a parcela e use o botão para ver o boleto. Lá estão o código de barras e a opção de salvar em PDF — pague pelo aplicativo do seu banco. Não trabalhamos com Pix.' },
   { p: 'Perdi o boleto, e agora?', r: 'Nada se perde por aqui: a parcela sempre mostra a linha digitável e o PDF. Se já venceu, o botão de 2ª via gera um boleto novo com data nova.' },
   { p: 'Paguei e a parcela continua em aberto', r: 'A baixa do banco pode levar até 3 dias úteis. Se passou disso, anexe o comprovante na própria parcela — a equipe confere e dá a baixa.' },
-  { p: 'Por que a parcela em atraso tem valor diferente?', r: 'O valor da parcela é o valor pleno com 20% de desconto por pagar até o vencimento. Pagando depois, o desconto não vale e entram correção pelo IPCA e juros de 1% ao mês.', c: '4.3' },
-  { p: 'Posso adiantar ou quitar tudo?', r: 'Pode. Em Financeiro, a opção "Antecipar" mostra a soma das próximas parcelas e do contrato inteiro mantendo o desconto de pontualidade. Escolhida a opção, o boleto único sai na hora.' },
+  { p: 'Por que a parcela em atraso tem valor diferente?', r: 'O valor da parcela é fixo. Depois do vencimento entram juros de mora de 1% ao mês, calculados por dia de atraso, mais a taxa de boleto — por isso a 2ª via sai um pouco maior que a parcela.', c: '4.3' },
+  { p: 'Posso adiantar ou quitar tudo?', r: 'Pode. Em Financeiro, a opção "Antecipar" mostra a soma das próximas parcelas e do contrato inteiro. As parcelas entram pelo valor delas, e a taxa de boleto é cobrada uma vez só em vez de uma por parcela. Escolhida a opção, o boleto único sai na hora.' },
   { p: 'Posso mudar a data de vencimento?', r: 'A reprogramação da forma de pagamento é combinada com a equipe e tem taxa fixa de R$ 75,00 prevista no termo.', c: '17.3' },
   { p: 'O que acontece se eu atrasar?', r: 'Enquanto houver parcela em aberto, a participação em eventos, ensaios e a retirada de convites ficam suspensas até regularizar.', c: '8.1' },
   { p: 'Como peço convites extras?', r: 'Na aba Contrato, em "Seus convites". O pedido vai para a equipe, que confere disponibilidade e faz o aditivo. Nada é cobrado automaticamente.' },
@@ -3229,7 +3213,16 @@ async function irPara(aba) {
 }
 
 async function entrar() {
-  estado.eu = await chamar('/me');
+  // O /config do CRM pede token, e a tentativa do boot acontece antes do login:
+  // voltava 401 e `estado.config` ficava vazio pelo resto da sessão — o botão de
+  // "Falar com a gente" sumia e os prazos do contrato caíam nos valores
+  // embutidos aqui no JS, em vez dos que o CRM manda. Com a sessão em mãos,
+  // pede de novo. Falha calada: a tela já sabe viver sem config.
+  const [eu] = await Promise.all([
+    chamar('/me'),
+    chamar('/config').then((c) => { estado.config = c; }).catch(() => {}),
+  ]);
+  estado.eu = eu;
   if (estado.eu.situacao === 'cancelada') return telaCancelada();
   await irPara('inicio');
 }
@@ -3251,8 +3244,14 @@ if ('serviceWorker' in navigator) {
 (async function iniciar() {
   aplicarTema(temaAtual());
   estado.visao = visaoGuardada();
-  try { estado.config = await chamar('/config'); } catch { /* segue sem config */ }
   const guardado = recuperar();
+  // Na demonstração e no local o /config responde sem sessão, e a tela de
+  // entrada usa o que vem dele (CPF de exemplo, aviso de ambiente). No CRM ele
+  // pede token, então pedir aqui só renderia um 401 no console: quem já tem
+  // sessão recebe o config dentro de entrar().
+  if (!window.API_URL) {
+    try { estado.config = await chamar('/config'); } catch { /* segue sem config */ }
+  }
   if (guardado) {
     estado.token = guardado;
     try { return await entrar(); } catch { esquecer(); estado.token = null; }

@@ -200,9 +200,8 @@
   /**
    * A composição do boleto único no vocabulário do protótipo.
    *
-   * A tela lê `unico.parcelas`, `unico.economia` (o desconto de pontualidade
-   * preservado) e `unico.diasParaVencer`; o CRM devolve a mesma coisa em
-   * `itens`, `descontoMantido` e a data pronta.
+   * A tela lê `unico.parcelas` e `unico.diasParaVencer`; o CRM devolve a mesma
+   * coisa em `itens` e a data pronta.
    */
   const comoOPortalLeOUnico = (r) => ({
     valor: r.subtotal,
@@ -211,14 +210,13 @@
     totalBoleto: r.total,
     economiaTaxa: r.economiaTaxa,
     unico: {
-      economia: r.descontoMantido || 0,
       diasParaVencer: 3,
       parcelas: (r.itens || []).map((i) => ({
         id: i.billId,
         parcela: i.parcela,
         vencimento: i.vencimento,
         vencida: i.vencida,
-        valorComPontualidade: i.valorDaParcela,
+        valorDaParcela: i.valorDaParcela,
         valor: i.valor,
         encargos: i.encargos,
       })),
@@ -230,9 +228,9 @@
    *
    * `valorDevido` é o que se paga SEM a taxa administrativa — o protótipo
    * separa as duas coisas para a tela poder dizer "inclui R$ 2,90 de taxa". Na
-   * vencida esse valor já vem com IPCA e juros (cláusula 4.3), e é por isso que
-   * ele não pode ser a parcela limpa: o boleto antigo ficou desatualizado, e
-   * pagar por ele deixa a dívida de pé.
+   * vencida esse valor já vem com o juro de mora, e é por isso que ele não pode
+   * ser a parcela limpa: o boleto antigo ficou desatualizado, e pagar por ele
+   * deixa a dívida de pé.
    */
   const doBoleto = (b) => ({
     ...b,
@@ -367,7 +365,7 @@
     // ── 2ª via ───────────────────────────────────────────────────────────────
     const simular2via = caminho.match(/^\/financeiro\/([\w-]+)\/segunda-via\/simular$/);
     if (simular2via && metodo === 'POST') {
-      // A tela lê a composição direto (correcaoIpca, juros, total); no CRM ela
+      // A tela lê a composição direto (valorParcela, juros, total); no CRM ela
       // vem dentro de `encargos`, junto do total já com a taxa.
       const r = await pedir('POST', `/financeiro/${simular2via[1]}/segunda-via/simular`, corpo || {}, token);
       return r.encargos || {};
@@ -409,6 +407,9 @@
     // que deixava a aba inteira sem conteúdo.
     if (caminho === '/turma') {
       const t = await pedir('GET', '/turma', null, token);
+      // Os campos que só o protótipo tem precisam existir, nem que vazios: a
+      // tela faz `cursos.join(...)` sem perguntar, e um undefined aqui derrubava
+      // a aba inteira antes de desenhar a primeira linha.
       return {
         ...t,
         dataEvento: dataBR(t.dataEvento),
@@ -416,6 +417,17 @@
         cronograma: t.cronograma || [],
         convites: t.convites || [],
         comissao: t.comissao || [],
+        // A lista de cursos só existe quando a turma junta mais de um; repetir
+        // aqui o rótulo (que JÁ é o curso) punha "Turma" e "Curso" com o mesmo
+        // texto, um embaixo do outro.
+        cursos: t.cursos || [],
+        // sem cadastro no CRM: a tela esconde o que vier vazio em vez de
+        // mostrar "undefined" para o formando
+        espaco: t.espaco || '',
+        cidade: t.cidade || '',
+        consultora: t.consultora || '',
+        pacote: t.pacote || '',
+        avisos: t.avisos || [],
       };
     }
     // ── pedidos (viram demanda no CRM) ───────────────────────────────────────
@@ -564,6 +576,9 @@
    * Cada uma some daqui quando a rota nascer, e a tela volta sozinha.
    */
   window.API_RECURSOS = {
+    // O CRM não tem rota de PDF do boleto: a cobrança real abre pelo link da
+    // operadora, e a da turma de simulação não tem documento — só a linha.
+    pdfDoBoleto: false,
     segundaVia: true,
     boletoUnico: true,
     encargos: true,

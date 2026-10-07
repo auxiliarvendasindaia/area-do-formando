@@ -22,7 +22,8 @@ O que ficou para depois, com o motivo. Atualizado em 25/09/2026.
 ## Decisões em aberto
 
 - **Reajuste anual (IPCA + 2%).** A partir de abril de 2027 a parcela muda de valor e a tela não
-  explica, porque o IPCA só aparece quando se paga uma cobrança vencida. Ver se isso basta.
+  explica. Desde 06/10/2026 o IPCA não aparece em tela nenhuma — ele é só o reajuste programado, que
+  chega dentro do valor da parcela. Ver se a tela precisa avisar quando isso acontecer.
 - **Convites nomeados** na aba Contrato ("2 de 6 com nome na lista"): sem o prazo de nomes, pode
   ter perdido o sentido.
 
@@ -41,8 +42,8 @@ O que ficou para depois, com o motivo. Atualizado em 25/09/2026.
 
 - Ler Vindi e CRM de verdade no lugar de `dados/exemplo.json`.
 - **2ª via — pronta (25/09).** `POST /api/area-formando/financeiro/:billId/segunda-via` cancela o
-  boleto vencido na Vindi e emite o novo, com o valor da cláusula 4.3 (pleno + IPCA + juros até o dia
-  escolhido) mais a taxa do contrato; `/simular` faz a mesma conta sem escrever nada, para prévia e
+  boleto vencido na Vindi e emite o novo, com o valor da cláusula 4.3 (parcela + juros de mora até o
+  dia escolhido) mais a taxa do contrato; `/simular` faz a mesma conta sem escrever nada, para prévia e
   boleto nunca discordarem. Vencimento em até 5 dias, nunca no passado.
   **Cancela antes de criar**, de propósito: na ordem inversa, uma falha deixaria dois boletos válidos
   da mesma parcela e alguém pagaria os dois.

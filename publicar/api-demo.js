@@ -112,8 +112,6 @@
     return {
       id: b.id, parcela: b.parcela, nome: nomeCobranca(b), descricao: b.descricao, vencimento: b.vencimento,
       valor: b.valor, status, pagoEm: b.pagoEm, valorPago: b.valorPago,
-      valorPleno: b.unico ? null : valorPleno(b.valor),
-      descontoPontualidade: CONTRATO.descontoPontualidade,
       valorAtualizado: b.valorAtualizado || null,
       encargos: b.encargos || null,
       temLinhaDigitavel: emitido,
@@ -122,7 +120,7 @@
     };
   }
 
-  // O que se deve HOJE: vencida vale o pleno com os encargos da 4.3 até hoje.
+  // O que se deve HOJE: vencida vale a parcela mais o juro corrido até hoje.
   const comprovantePendente = (adesaoId, billId) =>
     comprovantes.some((c) => c.adesaoId === adesaoId && c.billId === billId && c.status === 'em_analise');
 
@@ -139,7 +137,7 @@
     p.taxaBoleto = b.status === 'pago' ? 0 : taxaDoContrato(adesao);
     if (p.status === 'pago') p.valorDevido = b.valorPago || b.valor;
     else if (p.status === 'em_atraso' && !b.unico) {
-      p.encargosHoje = await calcularEncargos(b, new Date(`${HOJE}T12:00:00`));
+      p.encargosHoje = calcularEncargos(b, new Date(`${HOJE}T12:00:00`));
       p.valorDevido = p.encargosHoje.total;
     } else p.valorDevido = b.valorAtualizado || b.valor;
     if (p.status === 'em_atraso' && adesaoId && comprovantePendente(adesaoId, b.id)) p.status = 'em_analise';
@@ -204,10 +202,10 @@
     const parcelas = [];
     for (const { b, s } of escolhidas) {
       if (s === 'em_atraso') {
-        const e = await calcularEncargos(b, venc);
-        parcelas.push({ id: b.id, parcela: b.parcela, vencimento: b.vencimentoOriginal || b.vencimento, vencida: true, valorComPontualidade: b.valor, valor: e.total, encargos: e });
+        const e = calcularEncargos(b, venc);
+        parcelas.push({ id: b.id, parcela: b.parcela, vencimento: b.vencimentoOriginal || b.vencimento, vencida: true, valorDaParcela: b.valor, valor: e.total, encargos: e });
       } else {
-        parcelas.push({ id: b.id, parcela: b.parcela, vencimento: b.vencimento, vencida: false, valorComPontualidade: b.valor, valor: b.valorAtualizado || b.valor, encargos: b.encargos || null });
+        parcelas.push({ id: b.id, parcela: b.parcela, vencimento: b.vencimento, vencida: false, valorDaParcela: b.valor, valor: b.valorAtualizado || b.valor, encargos: b.encargos || null });
       }
     }
     const total = arredonda(parcelas.reduce((a, p) => a + p.valor, 0));
@@ -222,7 +220,6 @@
       linhaDigitavel: linhaFalsa(`${id}-${vencimento}`), pdfUrl: null, urlPagamento: null,
       unico: {
         parcelas,
-        economia: arredonda(parcelas.filter((p) => !p.vencida && !p.encargos).reduce((a, p) => a + (valorPleno(p.valorComPontualidade) - p.valor), 0)),
         diasParaVencer: DIAS_VENCIMENTO_UNICO,
       },
     };
@@ -230,8 +227,11 @@
 
   // --- regras do termo de adesão (iguais às do servidor.mjs) ------------------
   // Vêm do contrato (adesao-contrato.template.ts), com a cláusula citada.
+  // A parcela tem VALOR FIXO (06/10/2026): não há desconto de pontualidade a
+  // perder, e o IPCA do contrato é o reajuste programado dos 12 meses, que já
+  // chega dentro do valor da parcela. O atraso acrescenta só o juro de mora.
+  const REGRA_ENCARGOS = 'Valor da parcela acrescido de juros de mora de 1% ao mês, calculados pro rata die';
   const CONTRATO = {
-    descontoPontualidade: 0.20,            // 4.1
     jurosMoraMes: 0.01,                    // 4.3
     diasNotificacaoAntesNegativar: 15,     // 8.2
     honorariosCobranca: 0.10,              // 8.3
@@ -253,7 +253,6 @@
   };
 
   const arredonda = (n) => Math.round(n * 100) / 100;
-  const valorPleno = (v) => arredonda(v / (1 - CONTRATO.descontoPontualidade));
 
   let sequencialProtocolo = 0;
   function novaSolicitacao(adesao, tipo, payload) {
@@ -273,66 +272,17 @@
     return s;
   }
 
-  // --- IPCA (IBGE) -----------------------------------------------------------
-  // Cláusula 4.3 manda corrigir pelo IPCA. A série mensal vem da API pública de
-  // agregados do IBGE (tabela 1737, variável 63). Se a consulta falhar, o cálculo
-  // segue sem correção e a tela avisa.
-  const IPCA_URL = 'https://servicodados.ibge.gov.br/api/v3/agregados/1737/periodos/-36/variaveis/63?localidades=N1[all]';
-  let ipcaSerie = null;
-
-  async function serieIpca() {
-    if (ipcaSerie) return ipcaSerie;
-    try {
-      const resp = await fetch(IPCA_URL);
-      if (!resp.ok) throw new Error(String(resp.status));
-      const dados = await resp.json();
-      const bruto = dados?.[0]?.resultados?.[0]?.series?.[0]?.serie ?? {};
-      const serie = {};
-      for (const [mes, valor] of Object.entries(bruto)) {
-        const n = Number(String(valor).replace(',', '.'));
-        if (Number.isFinite(n)) serie[mes] = n;
-      }
-      ipcaSerie = serie;
-      return serie;
-    } catch { return null; }
-  }
-
-  function fatorIpca(serie, de, ate) {
-    if (!serie) return { fator: 1, meses: [], publicadoAte: null, disponivel: false };
-    const meses = Object.keys(serie).sort();
-    const chave = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
-    let fator = 1;
-    const usados = [];
-    const cursor = new Date(de.getFullYear(), de.getMonth() + 1, 1);
-    while (cursor <= ate) {
-      const k = chave(cursor);
-      if (serie[k] != null) { fator *= 1 + serie[k] / 100; usados.push(k); }
-      cursor.setMonth(cursor.getMonth() + 1);
-    }
-    return { fator, meses: usados, publicadoAte: meses[meses.length - 1] || null, disponivel: true };
-  }
-
-  async function calcularEncargos(boleto, ate) {
+  function calcularEncargos(boleto, ate) {
     const venceu = new Date(`${boleto.vencimentoOriginal || boleto.vencimento}T12:00:00`);
     const dias = Math.max(0, Math.round((ate - venceu) / 86400000));
-    const pleno = valorPleno(boleto.valor);
-    const serie = await serieIpca();
-    const ipca = fatorIpca(serie, venceu, ate);
-    const corrigido = arredonda(pleno * ipca.fator);
-    const correcaoIpca = arredonda(corrigido - pleno);
-    const juros = arredonda(corrigido * CONTRATO.jurosMoraMes * (dias / 30));
+    const valor = arredonda(boleto.valor);
+    const juros = arredonda(valor * CONTRATO.jurosMoraMes * (dias / 30));
     return {
       diasAtraso: dias,
-      valorComPontualidade: boleto.valor,
-      valorPleno: pleno,
-      descontoPerdido: arredonda(pleno - boleto.valor),
-      correcaoIpca,
-      ipcaMeses: ipca.meses.length,
-      ipcaPublicadoAte: ipca.publicadoAte,
-      ipcaDisponivel: ipca.disponivel,
+      valorParcela: valor,
       juros,
-      total: arredonda(corrigido + juros),
-      regra: 'Cláusula 4.3: valor pleno (sem o desconto de pontualidade) + IPCA + juros de mora de 1% ao mês',
+      total: arredonda(valor + juros),
+      regra: REGRA_ENCARGOS,
     };
   }
   async function extratoDoFormando(adesao) {
@@ -860,7 +810,7 @@
       const novaData = new Date(`${corpo.novoVencimento}T12:00:00`);
 
       b.vencimentoOriginal = b.vencimentoOriginal || b.vencimento;
-      const encargos = await calcularEncargos(b, novaData);
+      const encargos = calcularEncargos(b, novaData);
       b.vencimento = corpo.novoVencimento;
       b.linhaDigitavel = linhaFalsa(`${b.id}-${corpo.novoVencimento}`);
       b.valorAtualizado = encargos.total;
@@ -975,7 +925,7 @@
   }
 
   // Ponto de entrada usado pelo app no lugar do fetch.
-  // Assíncrona porque a 2ª via consulta o IPCA no IBGE. As rotas diretas
+  // Assíncrona porque a 2ª via calcula o juro até a data escolhida. As rotas diretas
   // continuam síncronas — o await aqui atende as duas formas.
   window.API_DEMO = async function (metodo, caminho, corpo, token) {
     const direta = ROTAS[`${metodo} ${caminho}`];
