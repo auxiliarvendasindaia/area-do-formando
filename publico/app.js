@@ -2874,7 +2874,8 @@ function abaTurma() {
           </div>`).join('')}
       </div>
       <p class="rodape-nota" style="margin-top:10px">Quem aparece aqui assinou a adesão desta turma.
-      Nada do financeiro de ninguém é mostrado — nem o seu para os outros.</p>` : ''}
+      Nada do financeiro de ninguém é mostrado — nem o seu para os outros.</p>
+      ${temRecurso('listaDaTurmaPdf') ? '<div class="acoes"><button class="botao secundario" data-lista-pdf>Baixar a lista em PDF</button></div>' : ''}` : ''}
     ${t.pacote ? `<div class="cartao">
       <div class="kicker traco">Pacote contratado</div>
       <p style="margin:6px 0 0">${escapar(t.pacote)}</p>
@@ -2917,6 +2918,15 @@ function abaTurma() {
   `, escapar(t.rotulo));
 
   app.querySelectorAll('[data-ir]').forEach((b) => b.addEventListener('click', () => irPara(b.dataset.ir)));
+  // A lista em PDF sai do CRM (é lá que o navegador do servidor imprime a
+  // folha). No protótipo e na demonstração o botão continua aparecendo, dizendo
+  // o que faz no app de verdade — esconder faria o teste local parecer que a
+  // função não existe.
+  app.querySelectorAll('[data-lista-pdf]').forEach((b) => b.addEventListener('click', () => {
+    if (!window.API_CRM) return avisar('No app de verdade, este botão baixa a lista da turma em PDF');
+    const turma = (t.rotulo || 'formatura').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-');
+    baixarArquivo('/turma/formandos/pdf', `formandos-turma-${turma}.pdf`);
+  }));
 }
 
 // ---------- central de avisos (o sino) ---------------------------------------

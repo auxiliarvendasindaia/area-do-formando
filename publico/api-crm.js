@@ -602,6 +602,10 @@
     // operadora confirmou. Sai como comprovante, sem CNPJ, enquanto a equipe não
     // define qual empresa do grupo emite a cobrança da formatura.
     recibo: true,
+    // A lista de formandos da turma em PDF (09/10/2026): os nomes da tela
+    // separados por curso, com o telefone ao lado — este o CRM só põe no papel,
+    // a tela continua sem contato de colega.
+    listaDaTurmaPdf: true,
     // Ligado pela resposta de /config, que diz se há número de atendimento.
     falarComEquipe: false,
     // Informe de pagamentos do ano (05/10/2026). O CNPJ que faltava foi
